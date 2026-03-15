@@ -813,14 +813,10 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       break;
     }
     case 0x02: { // cop imm(s)
-      cpu_readOpcode(cpu);
-      cpu_pushByte(cpu, cpu->k);
-      cpu_pushWord(cpu, cpu->pc, false);
-      cpu_pushByte(cpu, cpu_getFlags(cpu));
-      cpu->i = true;
-      cpu->d = false;
-      cpu->k = 0;
-      cpu->pc = cpu_readWord(cpu, 0xffe4, 0xffe5, true);
+      uint8_t val = cpu_readOpcode(cpu);
+      cpu_checkInt(cpu);
+      cpu_idle(cpu);
+      fprintf(stderr, "cop with operand %02x\n", val);
       break;
     }
     case 0x03: { // ora sr
