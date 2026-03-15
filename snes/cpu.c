@@ -793,19 +793,6 @@ static void cpu_trb(Cpu* cpu, uint32_t low, uint32_t high) {
   }
 }
 
-static void cpu_stp(Cpu* cpu, uint32_t low, uint32_t high) {
-  if(cpu->mf) {
-    cpu_checkInt(cpu);
-    uint8_t value = cpu_read(cpu, low);
-    cpu->a = (cpu->a & 0xff00) | ((cpu->a | value) & 0xff);
-  } else {
-    uint16_t value = cpu_readWord(cpu, low, high, true);
-    cpu->a |= value;
-  }
-  //cpu_setZN(cpu, cpu->a, cpu->mf);
-  printf("PC: %06x, low: %06x, high: %06x\n", cpu->pc - 1, low, high);
-}
-
 static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
   switch(opcode) {
     case 0x00: { // brk imm(s)
@@ -2250,10 +2237,10 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       }
       break;
     }
-    case 0xdb: { // stp imp - unofficial, repurposed to call emulator functions.
-      uint32_t low = 0;
-      uint32_t high = cpu_adrImm(cpu, &low, false);
-      cpu_stp(cpu, low, high);
+    case 0xdb: { // stp imp
+      cpu->stopped = true;
+      cpu_idle(cpu);
+      cpu_idle(cpu);
       break;
     }
     case 0xdc: { // jml ial
@@ -2485,6 +2472,10 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       uint32_t low = 0;
       uint32_t high = cpu_adrAlx(cpu, &low);
       cpu_sbc(cpu, low, high);
+      break;
+    }
+    default: {
+      printf("Unknown opcode: 0x%02x\n", opcode);
       break;
     }
   }
