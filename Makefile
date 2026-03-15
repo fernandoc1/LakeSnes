@@ -1,6 +1,6 @@
 
 CC = clang
-CFLAGS = -O3 -I ./snes -I ./zip
+CFLAGS = -g -I ./snes -I ./zip
 
 WINDRES = windres
 

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -72,6 +73,10 @@ static void renderScreen(void);
 static void handleInput(int keyCode, bool pressed);
 
 int main(int argc, char** argv) {
+  if(getenv("LAKESNES_DEBUG") != NULL) {
+    fprintf(stderr, "Debug mode enabled. Press Enter to continue. PID: %d\n", getpid());
+    getchar();
+  }
   // set up SDL
   if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
     printf("Failed to init SDL: %s\n", SDL_GetError());
