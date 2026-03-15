@@ -2474,5 +2474,9 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu_sbc(cpu, low, high);
       break;
     }
+    default: {
+      printf("Unknown opcode: 0x%02x\n", opcode);
+      break;
+    }
   }
 }
