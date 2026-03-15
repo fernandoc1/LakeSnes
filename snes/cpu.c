@@ -796,10 +796,13 @@ static void cpu_trb(Cpu* cpu, uint32_t low, uint32_t high) {
 static void cpu_stp(Cpu* cpu, uint32_t low, uint32_t high) {
   if(cpu->mf) {
     cpu_checkInt(cpu);
-    cpu->a = (cpu->a & 0xff00) | cpu_read(cpu, low);
+    uint8_t value = cpu_read(cpu, low);
+    cpu->a = (cpu->a & 0xff00) | ((cpu->a | value) & 0xff);
   } else {
-    cpu->a = cpu_readWord(cpu, low, high, true);
+    uint16_t value = cpu_readWord(cpu, low, high, true);
+    cpu->a |= value;
   }
+  //cpu_setZN(cpu, cpu->a, cpu->mf);
   printf("PC: %06x, low: %06x, high: %06x\n", cpu->pc - 1, low, high);
 }
 
@@ -2247,9 +2250,9 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       }
       break;
     }
-    case 0xdb: { // stp imp
+    case 0xdb: { // stp imp - unofficial, repurposed to call emulator functions.
       uint32_t low = 0;
-      uint32_t high = cpu_adrIdx(cpu, &low);
+      uint32_t high = cpu_adrImm(cpu, &low, false);
       cpu_stp(cpu, low, high);
       break;
     }
