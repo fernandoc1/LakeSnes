@@ -61,9 +61,9 @@ int main(void)
         fill_demo_memory(first_memory[i], demo_size, (uint8_t)(0x10 + (i * 16)));
         fill_demo_memory(second_memory[i], demo_size, (uint8_t)(0x80 + (i * 16)));
 
-        viewers[i] = mem_viewer_create(first_memory[i], demo_size);
+        viewers[i] = mem_viewer_open(first_memory[i], demo_size);
         if (viewers[i] == NULL) {
-            fprintf(stderr, "failed to create viewer %d\n", i + 1);
+            fprintf(stderr, "failed to open viewer %d\n", i + 1);
             while (--i >= 0) {
                 mem_viewer_destroy(viewers[i]);
             }
@@ -87,17 +87,17 @@ int main(void)
         }
     }
 
-    if (mem_viewer_run_many(viewers, viewer_count) != 0) {
-        fprintf(stderr, "viewer run failed\n");
-        return 1;
-    }
-
     for (i = 0; i < viewer_count; ++i) {
         SDL_WaitThread(threads[i], &thread_result);
         if (thread_result != 0) {
             fprintf(stderr, "memory update test failed for viewer %d\n", i + 1);
             return 1;
         }
+    }
+
+    SDL_Delay(2000);
+
+    for (i = 0; i < viewer_count; ++i) {
         mem_viewer_destroy(viewers[i]);
     }
 
