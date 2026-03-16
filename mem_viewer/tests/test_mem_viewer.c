@@ -19,8 +19,11 @@ int mem_viewer_debug_set_changed_only(MemViewer *viewer, int enabled);
 int mem_viewer_debug_get_visible_line_count(MemViewer *viewer);
 int mem_viewer_debug_get_change_fade(MemViewer *viewer, size_t offset);
 int mem_viewer_debug_is_closed(MemViewer *viewer);
+int mem_viewer_debug_scroll_to_offset(MemViewer *viewer, size_t offset);
 
 static void pump_sdl_events(void);
+static void print_viewer_text(FILE *stream, MemViewer *viewer);
+static int wait_for_text_contains(MemViewer *viewer, const char *needle, Uint32 timeout_ms);
 
 static void update_live_memory(uint8_t *memory, size_t size, size_t iteration)
 {
@@ -34,6 +37,93 @@ static void update_live_memory(uint8_t *memory, size_t size, size_t iteration)
             memory[offset] = (uint8_t)((iteration * 11U) + (i * 13U) + 0x20U);
         }
     }
+}
+
+static void build_line_text(char *buffer, size_t buffer_size, const uint8_t *memory, size_t base)
+{
+    size_t i;
+    int written;
+
+    written = snprintf(buffer, buffer_size, "%08zx:", base);
+    for (i = 0U; i < 16U && (size_t)written + 4U < buffer_size; ++i) {
+        written += snprintf(
+            buffer + written,
+            buffer_size - (size_t)written,
+            " %02X",
+            memory[base + i]
+        );
+    }
+}
+
+static void fill_large_memory(uint8_t *memory, size_t size)
+{
+    for (size_t i = 0U; i < size; ++i) {
+        memory[i] = (uint8_t)((i * 29U + 7U) & 0xFFU);
+    }
+}
+
+static int run_large_buffer_visibility_test(SDL_Window *sdl_window)
+{
+    enum { memory_size = 128 * 1024 };
+    uint8_t *memory;
+    MemViewer *viewer;
+    size_t visible_offset;
+    size_t offscreen_offset;
+    char expected_line[96];
+
+    memory = (uint8_t *)malloc(memory_size);
+    if (memory == NULL) {
+        fprintf(stderr, "large-buffer test allocation failed\n");
+        return 1;
+    }
+    fill_large_memory(memory, memory_size);
+
+    viewer = mem_viewer_open(memory, memory_size);
+    if (viewer == NULL) {
+        fprintf(stderr, "mem_viewer_open failed for 128 KB buffer\n");
+        free(memory);
+        return 1;
+    }
+
+    visible_offset = 0x0005U;
+    offscreen_offset = 0x1FF25U;
+
+    memory[visible_offset] = 0x5AU;
+    memory[offscreen_offset] = 0xA5U;
+    if (mem_viewer_update(viewer) != 0) {
+        fprintf(stderr, "mem_viewer_update failed for large buffer\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    build_line_text(expected_line, sizeof(expected_line), memory, 0x0000U);
+    if (!wait_for_text_contains(viewer, expected_line, 500U)) {
+        fprintf(stderr, "large-buffer viewer did not refresh the visible top line\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_change_fade(viewer, visible_offset) != 0) {
+        fprintf(stderr, "visible large-buffer byte did not receive a change highlight\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_change_fade(viewer, offscreen_offset) != 255) {
+        fprintf(stderr, "offscreen large-buffer byte was highlighted before becoming visible\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    pump_sdl_events();
+    mem_viewer_destroy(viewer);
+    (void)sdl_window;
+    free(memory);
+    return 0;
 }
 
 static int text_contains(MemViewer *viewer, const char *needle)
@@ -466,6 +556,13 @@ int main(int argc, char **argv)
 
         pump_sdl_events();
         mem_viewer_destroy(viewer);
+
+        if (run_large_buffer_visibility_test(sdl_window) != 0) {
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
         printf("mem_viewer GTK/SDL integration test passed\n");
