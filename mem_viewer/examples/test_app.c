@@ -19,10 +19,13 @@ int main(void)
     enum { demo_size = 4096, viewer_count = 3 };
     uint8_t memory[viewer_count][demo_size];
     MemViewer *viewers[viewer_count];
+    int closed[viewer_count];
+    int open_count;
     int i;
 
     for (i = 0; i < viewer_count; ++i) {
         fill_demo_memory(memory[i], demo_size, (uint8_t)(0x10 + (i * 0x20)));
+        closed[i] = 0;
     }
 
     for (i = 0; i < viewer_count; ++i) {
@@ -36,8 +39,6 @@ int main(void)
         }
     }
 
-    SDL_Delay(1000);
-
     for (i = 0; i < viewer_count; ++i) {
         fill_demo_memory(memory[i], demo_size, (uint8_t)(0x80 + (i * 0x20)));
         if (mem_viewer_update_memory(viewers[i], memory[i], demo_size) != 0) {
@@ -50,7 +51,25 @@ int main(void)
         }
     }
 
-    SDL_Delay(2000);
+    open_count = viewer_count;
+    while (open_count > 0) {
+        SDL_Delay(50);
+
+        for (i = 0; i < viewer_count; ++i) {
+            if (closed[i]) {
+                continue;
+            }
+
+            if (mem_viewer_update_memory(viewers[i], memory[i], demo_size) == 0) {
+                continue;
+            }
+
+            closed[i] = 1;
+            --open_count;
+            mem_viewer_destroy(viewers[i]);
+            viewers[i] = NULL;
+        }
+    }
 
     for (i = 0; i < viewer_count; ++i) {
         mem_viewer_destroy(viewers[i]);

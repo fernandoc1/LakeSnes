@@ -18,6 +18,7 @@ struct MemViewer {
     SDL_Surface *surface;
     SDL_mutex *lock;
     Uint32 window_id;
+    int owns_video;
     int window_width;
     int window_height;
     int rows_visible;
@@ -81,7 +82,6 @@ static void mem_viewer_close_window(MemViewer *viewer)
     viewer->window = NULL;
     viewer->surface = NULL;
     viewer->window_id = 0;
-    mem_viewer_release_video();
 }
 
 static const Glyph *mem_viewer_find_glyph(char ch)
@@ -615,6 +615,7 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
 
     viewer->memory = (const uint8_t *)memory;
     viewer->size = size;
+    viewer->owns_video = 1;
     viewer->font_scale = 2;
     viewer->cell_w = (MEM_VIEWER_GLYPH_W + 4) * viewer->font_scale;
     viewer->cell_h = (MEM_VIEWER_GLYPH_H + 1) * viewer->font_scale;
@@ -681,6 +682,11 @@ void mem_viewer_destroy(MemViewer *viewer)
     if (viewer->lock != NULL) {
         SDL_DestroyMutex(viewer->lock);
         viewer->lock = NULL;
+    }
+
+    if (viewer->owns_video) {
+        mem_viewer_release_video();
+        viewer->owns_video = 0;
     }
 
     free(viewer);
