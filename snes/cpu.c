@@ -1221,8 +1221,10 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       break;
     }
     case 0x42: { // wdm imm(s)
+      uint8_t val = cpu_readOpcode(cpu);
       cpu_checkInt(cpu);
-      cpu_readOpcode(cpu);
+      cpu_idle(cpu);
+      fprintf(stderr, "wdm with operand %02x\n", val);
       break;
     }
     case 0x43: { // eor sr
@@ -2234,9 +2236,9 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       break;
     }
     case 0xdb: { // stp imp
-      cpu->stopped = true;
       cpu_idle(cpu);
       cpu_idle(cpu);
+      fprintf(stderr, "STP encountered at %06x\n", cpu->pc - 1);
       break;
     }
     case 0xdc: { // jml ial
