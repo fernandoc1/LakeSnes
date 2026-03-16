@@ -30,4 +30,5 @@ $(execname): $(ofiles)
 	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) -L. -lmem_viewer -Wl,-rpath,'$$ORIGIN'
 
 clean:
+	make -C mem_viewer clean
 	rm -f $(execname) $(ofiles)

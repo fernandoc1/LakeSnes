@@ -709,34 +709,6 @@ static void mem_viewer_handle_event(MemViewer *viewer, const SDL_Event *event)
         return;
     }
 
-    if (event->type == SDL_KEYDOWN) {
-        switch (event->key.keysym.sym) {
-        case SDLK_ESCAPE:
-            viewer->close_requested = 1;
-            break;
-        case SDLK_UP:
-            mem_viewer_scroll(viewer, -1);
-            break;
-        case SDLK_DOWN:
-            mem_viewer_scroll(viewer, 1);
-            break;
-        case SDLK_PAGEUP:
-            mem_viewer_scroll(viewer, -viewer->rows_visible);
-            break;
-        case SDLK_PAGEDOWN:
-            mem_viewer_scroll(viewer, viewer->rows_visible);
-            break;
-        case SDLK_HOME:
-            viewer->first_row = 0;
-            break;
-        case SDLK_END:
-            mem_viewer_scroll(viewer, (int)mem_viewer_total_rows(viewer));
-            break;
-        default:
-            break;
-        }
-    }
-
     SDL_UnlockMutex(viewer->lock);
 }
 
@@ -781,9 +753,6 @@ static int mem_viewer_manager_main(void *userdata)
                 break;
             case SDL_MOUSEWHEEL:
                 window_id = event.wheel.windowID;
-                break;
-            case SDL_KEYDOWN:
-                window_id = event.key.windowID;
                 break;
             case SDL_QUIT:
                 for (i = 0; i < g_viewer_count; ++i) {
