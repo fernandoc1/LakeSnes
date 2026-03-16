@@ -37,11 +37,6 @@ struct MemViewer {
 
 typedef struct {
     MemViewer *viewer;
-    const char *text;
-} MemViewerSetTextArgs;
-
-typedef struct {
-    MemViewer *viewer;
     char *buffer;
     size_t buffer_size;
     size_t required_size;
@@ -85,16 +80,13 @@ static int g_backend_refcount = 0;
 static GMainLoop *g_backend_loop = NULL;
 
 static gchar *mem_viewer_format_memory(const uint8_t *memory, size_t size);
-static int mem_viewer_parse_memory(const char *text, uint8_t *memory, size_t size, gchar **error_message);
 static int mem_viewer_ensure_backend(void);
 static void mem_viewer_release_backend(void);
 static int mem_viewer_invoke(MemViewerGtkTask task, void *userdata);
 static int mem_viewer_create_window_task(void *userdata);
 static int mem_viewer_reload_view_task(void *userdata);
 static int mem_viewer_destroy_view_task(void *userdata);
-static int mem_viewer_set_text_task(void *userdata);
 static int mem_viewer_copy_text_task(void *userdata);
-static int mem_viewer_apply_task(void *userdata);
 static int mem_viewer_move_window_task(void *userdata);
 static int mem_viewer_scroll_to_offset_task(void *userdata);
 static int mem_viewer_set_byte_task(void *userdata);
@@ -132,97 +124,6 @@ static gchar *mem_viewer_format_memory(const uint8_t *memory, size_t size)
     }
 
     return g_string_free(text, FALSE);
-}
-
-static int mem_viewer_hex_value(char ch)
-{
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return ch - 'a' + 10;
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return ch - 'A' + 10;
-    }
-    return -1;
-}
-
-static int mem_viewer_parse_memory(const char *text, uint8_t *memory, size_t size, gchar **error_message)
-{
-    const char *cursor;
-    size_t written;
-
-    cursor = text;
-    written = 0U;
-    while (*cursor != '\0') {
-        const char *line_end;
-        const char *colon;
-
-        line_end = strchr(cursor, '\n');
-        if (line_end == NULL) {
-            line_end = cursor + strlen(cursor);
-        }
-        if (line_end == cursor) {
-            cursor = *line_end == '\0' ? line_end : line_end + 1;
-            continue;
-        }
-
-        colon = memchr(cursor, ':', (size_t)(line_end - cursor));
-        if (colon == NULL) {
-            *error_message = g_strdup("Each line must contain an address followed by ':'.");
-            return -1;
-        }
-
-        cursor = colon + 1;
-        while (cursor < line_end) {
-            int high;
-            int low;
-
-            while (cursor < line_end && g_ascii_isspace((guchar)*cursor)) {
-                ++cursor;
-            }
-            if (cursor >= line_end) {
-                break;
-            }
-            if ((line_end - cursor) < 2) {
-                *error_message = g_strdup("Found an incomplete hex byte.");
-                return -1;
-            }
-
-            high = mem_viewer_hex_value(cursor[0]);
-            low = mem_viewer_hex_value(cursor[1]);
-            if (high < 0 || low < 0) {
-                *error_message = g_strdup("Found a non-hexadecimal byte value.");
-                return -1;
-            }
-            if (written >= size) {
-                *error_message = g_strdup("The editor contains more bytes than the mapped memory region.");
-                return -1;
-            }
-
-            memory[written] = (uint8_t)((high << 4) | low);
-            written += 1U;
-            cursor += 2;
-
-            while (cursor < line_end && g_ascii_isspace((guchar)*cursor)) {
-                ++cursor;
-            }
-        }
-
-        cursor = *line_end == '\0' ? line_end : line_end + 1;
-    }
-
-    if (written != size) {
-        *error_message = g_strdup_printf(
-            "The editor describes %zu bytes, but the mapped region contains %zu bytes.",
-            written,
-            size
-        );
-        return -1;
-    }
-
-    return 0;
 }
 
 static int mem_viewer_parse_size_value(const char *text, size_t *value)
@@ -462,32 +363,6 @@ static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scrol
     gtk_entry_set_text(GTK_ENTRY(viewer->value_entry), value_text);
 }
 
-static void mem_viewer_on_apply_clicked(GtkButton *button, gpointer userdata)
-{
-    GtkTextBuffer *buffer;
-    GtkTextIter start;
-    GtkTextIter end;
-    gchar *text;
-    gchar *error_message;
-    MemViewer *viewer;
-
-    (void)button;
-    viewer = (MemViewer *)userdata;
-    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
-    gtk_text_buffer_get_bounds(buffer, &start, &end);
-    text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
-    error_message = NULL;
-    if (mem_viewer_parse_memory(text, viewer->memory, viewer->size, &error_message) != 0) {
-        mem_viewer_set_status(viewer, error_message);
-        g_free(error_message);
-        g_free(text);
-        return;
-    }
-
-    mem_viewer_set_status(viewer, "Applied changes to memory");
-    g_free(text);
-}
-
 static void mem_viewer_on_reload_clicked(GtkButton *button, gpointer userdata)
 {
     (void)button;
@@ -715,7 +590,6 @@ static int mem_viewer_create_window_task(void *userdata)
     GtkWidget *box;
     GtkWidget *controls;
     GtkWidget *reload_button;
-    GtkWidget *apply_button;
     GtkWidget *set_byte_button;
     GtkWidget *offset_label;
     GtkWidget *value_label;
@@ -740,7 +614,6 @@ static int mem_viewer_create_window_task(void *userdata)
     box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     reload_button = gtk_button_new_with_label("Reload");
-    apply_button = gtk_button_new_with_label("Apply");
     set_byte_button = gtk_button_new_with_label("Set Byte");
     offset_label = gtk_label_new("Offset");
     value_label = gtk_label_new("Value");
@@ -757,7 +630,6 @@ static int mem_viewer_create_window_task(void *userdata)
     gtk_entry_set_text(GTK_ENTRY(viewer->value_entry), "00");
     gtk_container_add(GTK_CONTAINER(viewer->scroller), viewer->text_view);
     gtk_box_pack_start(GTK_BOX(controls), reload_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(controls), apply_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), offset_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), viewer->offset_entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), value_label, FALSE, FALSE, 0);
@@ -770,7 +642,6 @@ static int mem_viewer_create_window_task(void *userdata)
 
     g_signal_connect(viewer->window, "destroy", G_CALLBACK(mem_viewer_on_window_destroy), viewer);
     g_signal_connect(reload_button, "clicked", G_CALLBACK(mem_viewer_on_reload_clicked), viewer);
-    g_signal_connect(apply_button, "clicked", G_CALLBACK(mem_viewer_on_apply_clicked), viewer);
     g_signal_connect(set_byte_button, "clicked", G_CALLBACK(mem_viewer_on_set_byte_clicked), viewer);
     g_signal_connect(viewer->text_view, "button-press-event", G_CALLBACK(mem_viewer_on_text_view_button_press), viewer);
 
@@ -813,25 +684,6 @@ static int mem_viewer_destroy_view_task(void *userdata)
     return 0;
 }
 
-static int mem_viewer_set_text_task(void *userdata)
-{
-    GtkTextBuffer *buffer;
-    MemViewerSetTextArgs *args;
-
-    args = (MemViewerSetTextArgs *)userdata;
-    pthread_mutex_lock(&args->viewer->lock);
-    if (args->viewer->closed || args->viewer->text_view == NULL) {
-        pthread_mutex_unlock(&args->viewer->lock);
-        return -1;
-    }
-    pthread_mutex_unlock(&args->viewer->lock);
-
-    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(args->viewer->text_view));
-    gtk_text_buffer_set_text(buffer, args->text, -1);
-    mem_viewer_set_status(args->viewer, "Test edited buffer contents");
-    return 0;
-}
-
 static int mem_viewer_copy_text_task(void *userdata)
 {
     GtkTextBuffer *buffer;
@@ -856,22 +708,6 @@ static int mem_viewer_copy_text_task(void *userdata)
         g_strlcpy(args->buffer, text, args->buffer_size);
     }
     g_free(text);
-    return 0;
-}
-
-static int mem_viewer_apply_task(void *userdata)
-{
-    MemViewer *viewer;
-
-    viewer = (MemViewer *)userdata;
-    pthread_mutex_lock(&viewer->lock);
-    if (viewer->closed || viewer->text_view == NULL) {
-        pthread_mutex_unlock(&viewer->lock);
-        return -1;
-    }
-    pthread_mutex_unlock(&viewer->lock);
-
-    mem_viewer_on_apply_clicked(NULL, viewer);
     return 0;
 }
 
@@ -1044,28 +880,6 @@ size_t mem_viewer_debug_copy_text(MemViewer *viewer, char *buffer, size_t buffer
         return 0U;
     }
     return args.required_size;
-}
-
-int mem_viewer_debug_set_text(MemViewer *viewer, const char *text)
-{
-    MemViewerSetTextArgs args;
-
-    if (viewer == NULL || text == NULL) {
-        return -1;
-    }
-
-    args.viewer = viewer;
-    args.text = text;
-    return mem_viewer_invoke(mem_viewer_set_text_task, &args);
-}
-
-int mem_viewer_debug_apply(MemViewer *viewer)
-{
-    if (viewer == NULL) {
-        return -1;
-    }
-
-    return mem_viewer_invoke(mem_viewer_apply_task, viewer);
 }
 
 int mem_viewer_debug_set_window_position(MemViewer *viewer, int x, int y)
