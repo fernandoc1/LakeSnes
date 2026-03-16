@@ -143,7 +143,7 @@ static int mem_viewer_parse_size_value(const char *text, size_t *value)
     char *end;
     unsigned long long parsed;
 
-    parsed = strtoull(text, &end, 0);
+    parsed = strtoull(text, &end, 16);
     if (text == end || *end != '\0') {
         return -1;
     }
@@ -407,7 +407,7 @@ static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scrol
         gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(viewer->text_view), &iter, 0.0, FALSE, 0.0, 0.0);
     }
 
-    snprintf(offset_text, sizeof(offset_text), "%zu", offset);
+    snprintf(offset_text, sizeof(offset_text), "%zX", offset);
     snprintf(value_text, sizeof(value_text), "%02X", viewer->memory[offset]);
     gtk_entry_set_text(GTK_ENTRY(viewer->offset_entry), offset_text);
     gtk_entry_set_text(GTK_ENTRY(viewer->value_entry), value_text);
@@ -441,7 +441,7 @@ static void mem_viewer_on_set_byte_clicked(GtkButton *button, gpointer userdata)
     value_text = gtk_entry_get_text(GTK_ENTRY(viewer->value_entry));
 
     if (mem_viewer_parse_size_value(offset_text, &offset) != 0 || offset >= viewer->size) {
-        mem_viewer_set_status(viewer, "Invalid byte offset");
+        mem_viewer_set_status(viewer, "Invalid hex byte offset");
         return;
     }
     if (mem_viewer_parse_byte_value(value_text, &value) != 0) {
