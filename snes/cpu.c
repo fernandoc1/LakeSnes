@@ -36,10 +36,16 @@ Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHand
   cpu->read = read;
   cpu->write = write;
   cpu->idle = idle;
+  memset(cpu->cop_mem, 0, sizeof(cpu->cop_mem));
+  cpu->cop_addr = 0;
+  cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
+  cpu->memViewer = mem_viewer_open(cpu->mem, 0x10000); // Assuming 64KB memory space
   return cpu;
 }
 
 void cpu_free(Cpu* cpu) {
+  mem_viewer_destroy(cpu->copViewer);
+  mem_viewer_destroy(cpu->memViewer);
   free(cpu);
 }
 
@@ -817,6 +823,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu_checkInt(cpu);
       cpu_idle(cpu);
       fprintf(stderr, "cop with operand %02x\n", val);
+      cpu->cop_addr = val;
       break;
     }
     case 0x03: { // ora sr
@@ -1225,6 +1232,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu_checkInt(cpu);
       cpu_idle(cpu);
       fprintf(stderr, "wdm with operand %02x\n", val);
+      cpu->cop_mem[cpu->cop_addr] = val;
       break;
     }
     case 0x43: { // eor sr
@@ -2238,7 +2246,9 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
     case 0xdb: { // stp imp
       cpu_idle(cpu);
       cpu_idle(cpu);
-      fprintf(stderr, "STP encountered at %06x\n", cpu->pc - 1);
+      mem_viewer_update(cpu->copViewer);
+      mem_viewer_update(cpu->memViewer);
+      fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
       break;
     }
     case 0xdc: { // jml ial

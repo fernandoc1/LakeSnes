@@ -7,6 +7,8 @@
 
 #include "statehandler.h"
 
+#include "mem_viewer.h"
+
 typedef uint8_t (*CpuReadHandler)(void* mem, uint32_t adr);
 typedef void (*CpuWriteHandler)(void* mem, uint32_t adr, uint8_t val);
 typedef void (*CpuIdleHandler)(void* mem, bool waiting);
@@ -46,6 +48,12 @@ struct Cpu {
   bool nmiWanted;
   bool intWanted;
   bool resetWanted;
+  // Coprocessor state
+  uint8_t cop_mem[256];
+  uint8_t cop_addr;
+
+  MemViewer* copViewer;
+  MemViewer* memViewer;
 };
 
 Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);

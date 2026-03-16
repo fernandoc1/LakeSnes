@@ -20,3 +20,4 @@ mem_viewer/test_mem_viewer
 *.dll
 *.res
 *.dSYM
+*.swp

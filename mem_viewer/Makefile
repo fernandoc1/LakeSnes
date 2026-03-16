@@ -1,4 +1,4 @@
-CC := cc
+CC := gcc
 CFLAGS := -Wall -Wextra -Werror -std=c11 -fPIC -I. -Iinclude $(shell pkg-config --cflags sdl2)
 LDFLAGS :=
 SDL_LIBS := $(shell pkg-config --libs sdl2)
