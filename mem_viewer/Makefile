@@ -13,12 +13,14 @@ TEST := test_mem_viewer
 TEST_OBJS := tests/test_mem_viewer.o
 TEST_64KB := test_64kb_updates
 TEST_64KB_OBJS := tests/test_64kb_updates.o
+TEST_HIGHFREQ := test_highfreq_64kb
+TEST_HIGHFREQ_OBJS := tests/test_highfreq_64kb.o
 MANUAL_TEST := manual_window_test
 MANUAL_TEST_OBJS := tests/manual_window_test.o
 
-.PHONY: all clean test test-64kb manual-test
+.PHONY: all clean test test-64kb test-highfreq manual-test
 
-all: $(LIB) $(TEST) $(TEST_64KB) $(MANUAL_TEST)
+all: $(LIB) $(TEST) $(TEST_64KB) $(TEST_HIGHFREQ) $(MANUAL_TEST)
 
 $(LIB): $(LIB_OBJS)
 	$(CC) -shared $(LDFLAGS) -o $@ $^ $(GTK_LIBS) $(X11_LIBS) -lpthread
@@ -28,6 +30,9 @@ $(TEST): $(TEST_OBJS) $(LIB)
 
 $(TEST_64KB): $(TEST_64KB_OBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(TEST_64KB_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
+
+$(TEST_HIGHFREQ): $(TEST_HIGHFREQ_OBJS) $(LIB)
+	$(CC) $(CFLAGS) -o $@ $(TEST_HIGHFREQ_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
 
 $(MANUAL_TEST): $(MANUAL_TEST_OBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(MANUAL_TEST_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
@@ -39,6 +44,9 @@ tests/test_mem_viewer.o: tests/test_mem_viewer.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 tests/test_64kb_updates.o: tests/test_64kb_updates.c mem_viewer.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+tests/test_highfreq_64kb.o: tests/test_highfreq_64kb.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 tests/manual_window_test.o: tests/manual_window_test.c mem_viewer.h
@@ -68,8 +76,15 @@ test-64kb: $(TEST_64KB)
 	pkill -9 broadwayd 2>/dev/null; \
 	exit $$status
 
+test-highfreq: $(TEST_HIGHFREQ)
+	@echo "Running high-frequency 64KB test (interactive)..."
+	@echo "The test will open a memory viewer window and update a 64KB buffer at ~1000 updates/sec."
+	@echo "Close the window to exit."
+	@echo ""
+	./$(TEST_HIGHFREQ)
+
 manual-test: $(MANUAL_TEST)
 	./$(MANUAL_TEST)
 
 clean:
-	rm -f $(LIB_OBJS) $(TEST_OBJS) $(TEST_64KB_OBJS) $(MANUAL_TEST_OBJS) $(LIB) $(TEST) $(TEST_64KB) $(MANUAL_TEST)
+	rm -f $(LIB_OBJS) $(TEST_OBJS) $(TEST_64KB_OBJS) $(TEST_HIGHFREQ_OBJS) $(MANUAL_TEST_OBJS) $(LIB) $(TEST) $(TEST_64KB) $(TEST_HIGHFREQ) $(MANUAL_TEST)
