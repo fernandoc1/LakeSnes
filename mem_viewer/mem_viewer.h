@@ -6,6 +6,8 @@
 typedef struct MemViewer MemViewer;
 
 MemViewer *mem_viewer_open(const void *memory, size_t size);
+int mem_viewer_is_open(MemViewer *viewer);
+int mem_viewer_update(MemViewer *viewer);
 int mem_viewer_update_memory(MemViewer *viewer, const void *memory, size_t size);
 void mem_viewer_destroy(MemViewer *viewer);
 

@@ -41,8 +41,8 @@ int main(void)
 
     for (i = 0; i < viewer_count; ++i) {
         fill_demo_memory(memory[i], demo_size, (uint8_t)(0x80 + (i * 0x20)));
-        if (mem_viewer_update_memory(viewers[i], memory[i], demo_size) != 0) {
-            fprintf(stderr, "failed to update viewer %d\n", i + 1);
+        if (mem_viewer_update(viewers[i]) != 0) {
+            fprintf(stderr, "failed to refresh viewer %d\n", i + 1);
             while (i >= 0) {
                 mem_viewer_destroy(viewers[i]);
                 --i;
@@ -60,14 +60,12 @@ int main(void)
                 continue;
             }
 
-            if (mem_viewer_update_memory(viewers[i], memory[i], demo_size) == 0) {
+            if (mem_viewer_is_open(viewers[i])) {
                 continue;
             }
 
             closed[i] = 1;
             --open_count;
-            mem_viewer_destroy(viewers[i]);
-            viewers[i] = NULL;
         }
     }
 
