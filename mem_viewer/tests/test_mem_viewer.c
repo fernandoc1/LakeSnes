@@ -17,6 +17,24 @@ int mem_viewer_debug_search_next(MemViewer *viewer);
 int mem_viewer_debug_search_previous(MemViewer *viewer);
 int mem_viewer_debug_set_changed_only(MemViewer *viewer, int enabled);
 int mem_viewer_debug_get_visible_line_count(MemViewer *viewer);
+int mem_viewer_debug_get_change_fade(MemViewer *viewer, size_t offset);
+int mem_viewer_debug_is_closed(MemViewer *viewer);
+
+static void pump_sdl_events(void);
+
+static void update_live_memory(uint8_t *memory, size_t size, size_t iteration)
+{
+    const size_t offsets[] = {0U, 2U, 5U, 6U, 7U, 16U, 20U, 23U, 24U, 31U};
+
+    for (size_t i = 0U; i < (sizeof(offsets) / sizeof(offsets[0])); ++i) {
+        size_t offset;
+
+        offset = offsets[i];
+        if (offset < size) {
+            memory[offset] = (uint8_t)((iteration * 11U) + (i * 13U) + 0x20U);
+        }
+    }
+}
 
 static int text_contains(MemViewer *viewer, const char *needle)
 {
@@ -44,6 +62,49 @@ static int text_contains(MemViewer *viewer, const char *needle)
     return found;
 }
 
+static void print_viewer_text(FILE *stream, MemViewer *viewer)
+{
+    char *buffer;
+    size_t required;
+
+    required = mem_viewer_debug_copy_text(viewer, NULL, 0U);
+    if (required == 0U) {
+        fprintf(stream, "<viewer text unavailable>\n");
+        return;
+    }
+
+    buffer = (char *)malloc(required);
+    if (buffer == NULL) {
+        fprintf(stream, "<viewer text allocation failed>\n");
+        return;
+    }
+
+    if (mem_viewer_debug_copy_text(viewer, buffer, required) == 0U) {
+        fprintf(stream, "<viewer text copy failed>\n");
+        free(buffer);
+        return;
+    }
+
+    fprintf(stream, "%s\n", buffer);
+    free(buffer);
+}
+
+static int wait_for_text_contains(MemViewer *viewer, const char *needle, Uint32 timeout_ms)
+{
+    Uint32 start;
+
+    start = SDL_GetTicks();
+    while ((SDL_GetTicks() - start) < timeout_ms) {
+        pump_sdl_events();
+        if (text_contains(viewer, needle)) {
+            return 1;
+        }
+        SDL_Delay(10);
+    }
+
+    return text_contains(viewer, needle);
+}
+
 static void pump_sdl_events(void)
 {
     SDL_Event event;
@@ -52,11 +113,23 @@ static void pump_sdl_events(void)
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     uint8_t memory[32];
+    const size_t stress_offsets[] = {2U, 7U, 16U, 23U, 31U};
+    int auto_exit;
     MemViewer *viewer;
     SDL_Window *sdl_window;
+
+    auto_exit = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--auto-exit") == 0) {
+            auto_exit = 1;
+            continue;
+        }
+        fprintf(stderr, "usage: %s [--auto-exit]\n", argv[0]);
+        return 1;
+    }
 
     for (size_t i = 0U; i < sizeof(memory); ++i) {
         memory[i] = (uint8_t)i;
@@ -73,7 +146,7 @@ int main(void)
         SDL_WINDOWPOS_UNDEFINED,
         64,
         64,
-        SDL_WINDOW_HIDDEN
+        auto_exit ? SDL_WINDOW_HIDDEN : 0
     );
     if (sdl_window == NULL) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -126,6 +199,56 @@ int main(void)
         return 1;
     }
 
+    for (size_t iteration = 0U; iteration < 12U; ++iteration) {
+        char expected_line0[64];
+        char expected_line1[64];
+
+        for (size_t i = 0U; i < (sizeof(stress_offsets) / sizeof(stress_offsets[0])); ++i) {
+            size_t offset;
+
+            offset = stress_offsets[i];
+            memory[offset] = (uint8_t)(0x30U + (iteration * 7U) + (i * 3U));
+        }
+
+        if (mem_viewer_update(viewer) != 0) {
+            fprintf(stderr, "mem_viewer_update failed during stress iteration %zu\n", iteration);
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+
+        snprintf(
+            expected_line0,
+            sizeof(expected_line0),
+            "00000000: AA BB %02X 03 04 05 06 %02X",
+            memory[2],
+            memory[7]
+        );
+        snprintf(
+            expected_line1,
+            sizeof(expected_line1),
+            "00000010: %02X 11 12 13 14 15 16 %02X",
+            memory[16],
+            memory[23]
+        );
+
+        if (!wait_for_text_contains(viewer, expected_line0, 250U)
+            || !wait_for_text_contains(viewer, expected_line1, 250U)
+            || !wait_for_text_contains(viewer, "00000010: ", 250U)) {
+            fprintf(
+                stderr,
+                "GTK viewer did not reflect stress iteration %zu updates\n",
+                iteration
+            );
+            print_viewer_text(stderr, viewer);
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+    }
+
     if (mem_viewer_debug_set_byte(viewer, 5U, 0x7E) != 0) {
         fprintf(stderr, "failed to update a single byte through the GTK byte editor path\n");
         mem_viewer_destroy(viewer);
@@ -142,8 +265,28 @@ int main(void)
         return 1;
     }
 
-    if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E")) {
-        fprintf(stderr, "GTK viewer did not refresh after a single-byte edit\n");
+    {
+        char expected_line0[64];
+
+        snprintf(
+            expected_line0,
+            sizeof(expected_line0),
+            "00000000: AA BB %02X 03 04 7E 06 %02X",
+            memory[2],
+            memory[7]
+        );
+        if (!wait_for_text_contains(viewer, expected_line0, 250U)) {
+            fprintf(stderr, "GTK viewer did not refresh after a single-byte edit\n");
+            print_viewer_text(stderr, viewer);
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+    }
+
+    if (mem_viewer_debug_get_change_fade(viewer, 5U) != 0) {
+        fprintf(stderr, "changed byte did not start with the strongest highlight\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
@@ -168,6 +311,22 @@ int main(void)
 
     if (mem_viewer_debug_set_changed_only(viewer, 0) != 0) {
         fprintf(stderr, "failed to disable changed-lines-only filter\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_update(viewer) != 0) {
+        fprintf(stderr, "mem_viewer_update failed while advancing the fade state\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_change_fade(viewer, 5U) != 1) {
+        fprintf(stderr, "changed byte highlight did not fade on the next update\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
@@ -256,28 +415,81 @@ int main(void)
     }
 
     memory[6] = 0x9C;
-    SDL_Delay(250);
+    memory[24] = 0xD4;
 
-    if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E 9C")) {
-        fprintf(stderr, "GTK viewer did not refresh automatically after memory changed\n");
+    {
+        char expected_line0[64];
+        char expected_line1_prefix[64];
+
+        snprintf(
+            expected_line0,
+            sizeof(expected_line0),
+            "00000000: AA BB %02X 03 04 7E 9C %02X",
+            memory[2],
+            memory[7]
+        );
+        snprintf(
+            expected_line1_prefix,
+            sizeof(expected_line1_prefix),
+            "00000010: %02X 11 12 13 7E 15 16 %02X",
+            memory[16],
+            memory[23]
+        );
+
+        if (!wait_for_text_contains(viewer, expected_line0, 500U)) {
+            fprintf(stderr, "GTK viewer did not refresh automatically after memory changed\n");
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+
+        if (!wait_for_text_contains(viewer, expected_line1_prefix, 500U)
+            || !wait_for_text_contains(viewer, "D4 19 1A 1B 1C 1D 1E", 500U)) {
+            fprintf(stderr, "GTK viewer did not keep up with multi-line auto-refresh updates\n");
+            print_viewer_text(stderr, viewer);
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+    }
+
+    if (auto_exit) {
+        if (mem_viewer_debug_set_auto_refresh(viewer, 0) != 0) {
+            fprintf(stderr, "failed to disable auto refresh\n");
+            mem_viewer_destroy(viewer);
+            SDL_DestroyWindow(sdl_window);
+            SDL_Quit();
+            return 1;
+        }
+
+        pump_sdl_events();
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
-        return 1;
+        printf("mem_viewer GTK/SDL integration test passed\n");
+        return 0;
     }
 
-    if (mem_viewer_debug_set_auto_refresh(viewer, 0) != 0) {
-        fprintf(stderr, "failed to disable auto refresh\n");
-        mem_viewer_destroy(viewer);
-        SDL_DestroyWindow(sdl_window);
-        SDL_Quit();
-        return 1;
+    printf(
+        "mem_viewer live test is running.\n"
+        "Close the GTK memory viewer window to stop.\n"
+    );
+
+    for (size_t iteration = 0U; mem_viewer_debug_is_closed(viewer) == 0; ++iteration) {
+        pump_sdl_events();
+        update_live_memory(memory, sizeof(memory), iteration);
+        if (mem_viewer_update(viewer) != 0) {
+            fprintf(stderr, "mem_viewer_update failed in live update loop\n");
+            break;
+        }
+        SDL_Delay(50);
     }
 
-    pump_sdl_events();
     mem_viewer_destroy(viewer);
     SDL_DestroyWindow(sdl_window);
     SDL_Quit();
-    printf("mem_viewer GTK/SDL integration test passed\n");
+    printf("mem_viewer live test finished\n");
     return 0;
 }

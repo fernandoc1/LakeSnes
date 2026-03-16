@@ -25,6 +25,7 @@ struct MemViewer {
     uint8_t *memory;
     uint8_t *displayed_memory;
     uint8_t *changed_lines;
+    uint8_t *change_fade;
     size_t size;
     size_t line_count;
     pthread_mutex_t lock;
@@ -47,6 +48,7 @@ struct MemViewer {
     GtkTextTag *search_match_tag;
     GtkTextTag *search_current_tag;
     GtkTextTag *hidden_line_tag;
+    GtkTextTag *change_tags[255];
     size_t *search_matches;
     size_t search_match_count;
     size_t search_match_index;
@@ -112,6 +114,17 @@ typedef struct {
     int visible_line_count;
 } MemViewerVisibleLinesArgs;
 
+typedef struct {
+    MemViewer *viewer;
+    size_t offset;
+    int fade_value;
+} MemViewerFadeArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    int is_closed;
+} MemViewerClosedArgs;
+
 static pthread_mutex_t g_backend_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_backend_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t g_backend_thread;
@@ -140,10 +153,13 @@ static int mem_viewer_set_search_task(void *userdata);
 static int mem_viewer_step_search_task(void *userdata);
 static int mem_viewer_set_changed_only_task(void *userdata);
 static int mem_viewer_get_visible_lines_task(void *userdata);
+static int mem_viewer_get_change_fade_task(void *userdata);
+static int mem_viewer_is_closed_task(void *userdata);
 static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scroll_to_byte);
 static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer);
 static void mem_viewer_refresh_search(MemViewer *viewer, int scroll_to_current);
 static void mem_viewer_apply_changed_line_filter(MemViewer *viewer);
+static GtkTextTag *mem_viewer_get_change_tag(MemViewer *viewer, uint8_t fade);
 
 static void mem_viewer_init_x11_threads(void)
 {
@@ -228,6 +244,29 @@ static void mem_viewer_format_hex8(uint8_t value, char out[2])
     out[1] = digits[value & 0x0F];
 }
 
+static GtkTextTag *mem_viewer_get_change_tag(MemViewer *viewer, uint8_t fade)
+{
+    GtkTextBuffer *buffer;
+    char color[8];
+
+    if (fade >= 255U) {
+        return NULL;
+    }
+    if (viewer->change_tags[fade] != NULL) {
+        return viewer->change_tags[fade];
+    }
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    snprintf(color, sizeof(color), "#%02XFF%02X", fade, fade);
+    viewer->change_tags[fade] = gtk_text_buffer_create_tag(
+        buffer,
+        NULL,
+        "foreground", color,
+        NULL
+    );
+    return viewer->change_tags[fade];
+}
+
 static void mem_viewer_set_status(MemViewer *viewer, const char *status)
 {
     gtk_label_set_text(GTK_LABEL(viewer->status_label), status);
@@ -294,22 +333,6 @@ static void mem_viewer_mark_all_lines_changed(MemViewer *viewer)
     }
 
     memset(viewer->changed_lines, 1, viewer->line_count);
-}
-
-static void mem_viewer_mark_changed_lines(MemViewer *viewer)
-{
-    size_t i;
-
-    if (viewer->changed_lines == NULL) {
-        return;
-    }
-
-    memset(viewer->changed_lines, 0, viewer->line_count);
-    for (i = 0U; i < viewer->size; ++i) {
-        if (viewer->displayed_memory[i] != viewer->memory[i]) {
-            viewer->changed_lines[i / MEM_VIEWER_BYTES_PER_ROW] = 1;
-        }
-    }
 }
 
 static void mem_viewer_apply_changed_line_filter(MemViewer *viewer)
@@ -461,26 +484,54 @@ static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer)
     }
 
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    if (viewer->changed_lines != NULL) {
+        memset(viewer->changed_lines, 0, viewer->line_count);
+    }
     for (i = 0U; i < viewer->size; ++i) {
         GtkTextIter start;
         GtkTextIter end;
         char byte_text[2];
+        GtkTextTag *old_tag;
+        GtkTextTag *new_tag;
+        uint8_t old_fade;
+        uint8_t new_fade;
         int line;
         int line_offset;
 
-        if (viewer->displayed_memory[i] == viewer->memory[i]) {
-            continue;
-        }
-
         line = (int)(i / MEM_VIEWER_BYTES_PER_ROW);
         line_offset = 10 + (int)((i % MEM_VIEWER_BYTES_PER_ROW) * 3U);
-        mem_viewer_format_hex8(viewer->memory[i], byte_text);
         gtk_text_buffer_get_iter_at_line_offset(buffer, &start, line, line_offset);
         end = start;
         gtk_text_iter_forward_chars(&end, 2);
-        gtk_text_buffer_delete(buffer, &start, &end);
-        gtk_text_buffer_insert(buffer, &start, byte_text, 2);
-        viewer->displayed_memory[i] = viewer->memory[i];
+
+        old_fade = viewer->change_fade[i];
+        new_fade = old_fade;
+        old_tag = mem_viewer_get_change_tag(viewer, old_fade);
+        if (old_tag != NULL) {
+            gtk_text_buffer_remove_tag(buffer, old_tag, &start, &end);
+        }
+
+        if (viewer->displayed_memory[i] != viewer->memory[i]) {
+            mem_viewer_format_hex8(viewer->memory[i], byte_text);
+            gtk_text_buffer_delete(buffer, &start, &end);
+            gtk_text_buffer_insert(buffer, &start, byte_text, 2);
+            viewer->displayed_memory[i] = viewer->memory[i];
+            new_fade = 0U;
+            if (viewer->changed_lines != NULL) {
+                viewer->changed_lines[i / MEM_VIEWER_BYTES_PER_ROW] = 1U;
+            }
+        } else if (old_fade < 255U) {
+            new_fade = (uint8_t)(old_fade + 1U);
+        }
+
+        viewer->change_fade[i] = new_fade;
+        new_tag = mem_viewer_get_change_tag(viewer, new_fade);
+        if (new_tag != NULL) {
+            gtk_text_buffer_get_iter_at_line_offset(buffer, &start, line, line_offset);
+            end = start;
+            gtk_text_iter_forward_chars(&end, 2);
+            gtk_text_buffer_apply_tag(buffer, new_tag, &start, &end);
+        }
     }
     mem_viewer_apply_changed_line_filter(viewer);
     mem_viewer_apply_search_tags(viewer);
@@ -501,6 +552,9 @@ static void mem_viewer_reload_buffer(MemViewer *viewer)
     gtk_text_buffer_set_text(buffer, formatted, -1);
     if (viewer->displayed_memory != NULL) {
         memcpy(viewer->displayed_memory, viewer->memory, viewer->size);
+    }
+    if (viewer->change_fade != NULL) {
+        memset(viewer->change_fade, 255, viewer->size);
     }
     mem_viewer_mark_all_lines_changed(viewer);
     snprintf(status, sizeof(status), "Viewing %zu bytes", viewer->size);
@@ -590,7 +644,6 @@ static gboolean mem_viewer_auto_refresh_tick(gpointer userdata)
     if (mem_viewer_parse_size_value(offset_text, &offset) != 0) {
         offset = 0U;
     }
-    mem_viewer_mark_changed_lines(viewer);
     mem_viewer_sync_buffer_from_memory(viewer);
     mem_viewer_select_offset(viewer, offset < viewer->size ? offset : 0U, 0);
     return G_SOURCE_CONTINUE;
@@ -619,7 +672,6 @@ static void mem_viewer_apply_single_byte(MemViewer *viewer, size_t offset, uint8
     char status[128];
 
     viewer->memory[offset] = value;
-    mem_viewer_mark_changed_lines(viewer);
     mem_viewer_sync_buffer_from_memory(viewer);
     snprintf(status, sizeof(status), "Updated byte %zu to %02X", offset, value);
     mem_viewer_set_status(viewer, status);
@@ -656,7 +708,6 @@ static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scrol
 static void mem_viewer_on_reload_clicked(GtkButton *button, gpointer userdata)
 {
     (void)button;
-    mem_viewer_mark_changed_lines((MemViewer *)userdata);
     mem_viewer_sync_buffer_from_memory((MemViewer *)userdata);
 }
 
@@ -975,6 +1026,7 @@ static int mem_viewer_create_window_task(void *userdata)
     GtkWidget *value_label;
     GtkWidget *search_label;
     GtkWidget *changed_only_button;
+    GtkCssProvider *css_provider;
     MemViewer *viewer;
 
     viewer = (MemViewer *)userdata;
@@ -1038,6 +1090,19 @@ static int mem_viewer_create_window_task(void *userdata)
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(viewer->text_view), GTK_WRAP_NONE);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(viewer->text_view), FALSE);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(viewer->text_view), TRUE);
+    css_provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(
+        css_provider,
+        "textview, textview text { background-color: #101010; color: #FFFFFF; }",
+        -1,
+        NULL
+    );
+    gtk_style_context_add_provider(
+        gtk_widget_get_style_context(viewer->text_view),
+        GTK_STYLE_PROVIDER(css_provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+    );
+    g_object_unref(css_provider);
     gtk_entry_set_width_chars(GTK_ENTRY(viewer->offset_entry), 10);
     gtk_entry_set_width_chars(GTK_ENTRY(viewer->value_entry), 4);
     gtk_entry_set_max_length(GTK_ENTRY(viewer->value_entry), 2);
@@ -1093,7 +1158,6 @@ static int mem_viewer_reload_view_task(void *userdata)
     }
     pthread_mutex_unlock(&viewer->lock);
 
-    mem_viewer_mark_changed_lines(viewer);
     mem_viewer_sync_buffer_from_memory(viewer);
     return 0;
 }
@@ -1328,6 +1392,30 @@ static int mem_viewer_get_visible_lines_task(void *userdata)
     return 0;
 }
 
+static int mem_viewer_get_change_fade_task(void *userdata)
+{
+    MemViewerFadeArgs *args;
+
+    args = (MemViewerFadeArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->offset >= args->viewer->size || args->viewer->change_fade == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    args->fade_value = args->viewer->change_fade[args->offset];
+    pthread_mutex_unlock(&args->viewer->lock);
+    return 0;
+}
+
+static int mem_viewer_is_closed_task(void *userdata)
+{
+    MemViewerClosedArgs *args;
+
+    args = (MemViewerClosedArgs *)userdata;
+    args->is_closed = args->viewer->closed;
+    return 0;
+}
+
 MemViewer *mem_viewer_open(const void *memory, size_t size)
 {
     MemViewer *viewer;
@@ -1346,12 +1434,15 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
     viewer->line_count = (size + MEM_VIEWER_BYTES_PER_ROW - 1U) / MEM_VIEWER_BYTES_PER_ROW;
     viewer->displayed_memory = (uint8_t *)malloc(size);
     viewer->changed_lines = (uint8_t *)calloc(viewer->line_count == 0U ? 1U : viewer->line_count, 1U);
-    if (viewer->displayed_memory == NULL || viewer->changed_lines == NULL) {
+    viewer->change_fade = (uint8_t *)malloc(size);
+    if (viewer->displayed_memory == NULL || viewer->changed_lines == NULL || viewer->change_fade == NULL) {
+        free(viewer->change_fade);
         free(viewer->changed_lines);
         free(viewer);
         return NULL;
     }
     if (pthread_mutex_init(&viewer->lock, NULL) != 0) {
+        free(viewer->change_fade);
         free(viewer->displayed_memory);
         free(viewer->changed_lines);
         free(viewer);
@@ -1396,6 +1487,7 @@ void mem_viewer_destroy(MemViewer *viewer)
         mem_viewer_release_backend();
     }
     mem_viewer_clear_search_matches(viewer);
+    free(viewer->change_fade);
     free(viewer->changed_lines);
     free(viewer->displayed_memory);
     free(viewer);
@@ -1540,6 +1632,39 @@ int mem_viewer_debug_get_visible_line_count(MemViewer *viewer)
         return -1;
     }
     return args.visible_line_count;
+}
+
+int mem_viewer_debug_get_change_fade(MemViewer *viewer, size_t offset)
+{
+    MemViewerFadeArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.offset = offset;
+    args.fade_value = -1;
+    if (mem_viewer_invoke(mem_viewer_get_change_fade_task, &args) != 0) {
+        return -1;
+    }
+    return args.fade_value;
+}
+
+int mem_viewer_debug_is_closed(MemViewer *viewer)
+{
+    MemViewerClosedArgs args;
+
+    if (viewer == NULL) {
+        return 1;
+    }
+
+    args.viewer = viewer;
+    args.is_closed = 1;
+    if (mem_viewer_invoke(mem_viewer_is_closed_task, &args) != 0) {
+        return 1;
+    }
+    return args.is_closed;
 }
 
 int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset)

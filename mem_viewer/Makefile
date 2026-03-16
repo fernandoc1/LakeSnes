@@ -39,7 +39,7 @@ tests/manual_window_test.o: tests/manual_window_test.c mem_viewer.h
 test: $(TEST)
 	broadwayd :5 >/tmp/mem_viewer_broadway.log 2>&1 & pid=$$!; \
 	sleep 1; \
-	GDK_BACKEND=broadway BROADWAY_DISPLAY=:5 SDL_VIDEODRIVER=dummy ./$(TEST); \
+	GDK_BACKEND=broadway BROADWAY_DISPLAY=:5 SDL_VIDEODRIVER=dummy ./$(TEST) --auto-exit; \
 	status=$$?; \
 	kill $$pid >/dev/null 2>&1; \
 	wait $$pid 2>/dev/null; \
