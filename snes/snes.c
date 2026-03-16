@@ -27,7 +27,7 @@ static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set 
 static int snes_getAccessTime(Snes* snes, uint32_t adr);
 
 Snes* snes_init(void) {
-  Snes* snes = malloc(sizeof(Snes));
+  Snes* snes = (Snes*)malloc(sizeof(Snes));
   snes->cpu = cpu_init(snes, snes_cpuRead, snes_cpuWrite, snes_cpuIdle);
   snes->apu = apu_init(snes);
   snes->dma = dma_init(snes);

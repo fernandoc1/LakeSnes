@@ -12,15 +12,15 @@ static void sh_writeByte(StateHandler* sh, uint8_t val);
 static uint8_t sh_readByte(StateHandler* sh);
 
 StateHandler* sh_init(bool saving, const uint8_t* data, int size) {
-  StateHandler* sh = malloc(sizeof(StateHandler));
+  StateHandler* sh = (StateHandler*)malloc(sizeof(StateHandler));
   sh->saving = saving;
   sh->offset = 0;
   if(!saving) {
-    sh->data = malloc(size);
+    sh->data = (uint8_t*)malloc(size);
     memcpy(sh->data, data, size);
     sh->allocSize = size;
   } else {
-    sh->data = malloc(1024);
+    sh->data = (uint8_t*)malloc(1024);
     sh->allocSize = 1024;
   }
   return sh;
@@ -34,7 +34,7 @@ void sh_free(StateHandler* sh) {
 static void sh_writeByte(StateHandler* sh, uint8_t val) {
   if(sh->offset >= sh->allocSize) {
     // realloc
-    sh->data = realloc(sh->data, sh->allocSize * 2);
+    sh->data = (uint8_t*)realloc(sh->data, sh->allocSize * 2);
     sh->allocSize *= 2;
   }
   sh->data[sh->offset++] = val;

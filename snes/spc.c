@@ -29,7 +29,7 @@ static void spc_doOpcode(Spc* spc, uint8_t opcode);
 // addressing modes and opcode functions not declared, only used after defintions
 
 Spc* spc_init(void* mem, SpcReadHandler read, SpcWriteHandler write, SpcIdleHandler idle) {
-  Spc* spc = malloc(sizeof(Spc));
+  Spc* spc = (Spc*)malloc(sizeof(Spc));
   spc->mem = mem;
   spc->read = read;
   spc->write = write;

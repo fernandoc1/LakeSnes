@@ -1,5 +1,5 @@
 
-CC = clang
+CC = g++
 CFLAGS = -g -I ./snes -I ./zip
 
 WINDRES = windres

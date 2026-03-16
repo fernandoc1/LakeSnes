@@ -16,7 +16,7 @@ static uint8_t cart_readExHirom(Cart* cart, uint8_t bank, uint16_t adr);
 static void cart_writeHirom(Cart* cart, uint8_t bank, uint16_t adr, uint8_t val);
 
 Cart* cart_init(Snes* snes) {
-  Cart* cart = malloc(sizeof(Cart));
+  Cart* cart = (Cart*)malloc(sizeof(Cart));
   cart->snes = snes;
   cart->type = 0;
   cart->rom = NULL;
@@ -60,10 +60,10 @@ void cart_load(Cart* cart, int type, uint8_t* rom, int romSize, int ramSize) {
   cart->type = type;
   if(cart->rom != NULL) free(cart->rom);
   if(cart->ram != NULL) free(cart->ram);
-  cart->rom = malloc(romSize);
+  cart->rom = (uint8_t*)malloc(romSize);
   cart->romSize = romSize;
   if(ramSize > 0) {
-    cart->ram = malloc(ramSize);
+    cart->ram = (uint8_t*)malloc(ramSize);
     memset(cart->ram, 0, ramSize);
   } else {
     cart->ram = NULL;

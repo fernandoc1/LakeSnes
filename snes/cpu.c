@@ -31,7 +31,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode);
 // addressing modes and opcode functions not declared, only used after defintions
 
 Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
-  Cpu* cpu = malloc(sizeof(Cpu));
+  Cpu* cpu = (Cpu*)malloc(sizeof(Cpu));
   cpu->mem = mem;
   cpu->read = read;
   cpu->write = write;

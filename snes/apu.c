@@ -21,7 +21,7 @@ static const uint8_t bootRom[0x40] = {
 static void apu_cycle(Apu* apu);
 
 Apu* apu_init(Snes* snes) {
-  Apu* apu = malloc(sizeof(Apu));
+  Apu* apu = (Apu*)malloc(sizeof(Apu));
   apu->snes = snes;
   apu->spc = spc_init(apu, apu_spcRead, apu_spcWrite, apu_spcIdle);
   apu->dsp = dsp_init(apu);

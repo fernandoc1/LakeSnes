@@ -50,7 +50,7 @@ static struct {
   int16_t* audioBuffer;
   // paths
   char* prefPath;
-  char* pathSeparator;
+  const char* pathSeparator;
   // snes, timing
   Snes* snes;
   float wantedFrames;
@@ -100,8 +100,8 @@ int main(int argc, char** argv) {
   }
   // get pref path, create directories
   glb.prefPath = SDL_GetPrefPath("", "LakeSnes");
-  char* savePath = malloc(strlen(glb.prefPath) + 6); // "saves" (5) + '\0'
-  char* statePath = malloc(strlen(glb.prefPath) + 7); // "states" (6) + '\0'
+  char* savePath = (char*)malloc(strlen(glb.prefPath) + 6); // "saves" (5) + '\0'
+  char* statePath = (char*)malloc(strlen(glb.prefPath) + 7); // "states" (6) + '\0'
   strcpy(savePath, glb.prefPath);
   strcat(savePath, "saves");
   strcpy(statePath, glb.prefPath);
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
     printf("Failed to open audio device: %s\n", SDL_GetError());
     return 1;
   }
-  glb.audioBuffer = malloc(glb.audioFrequency / 50 * 4); // *2 for stereo, *2 for sizeof(int16)
+  glb.audioBuffer = (int16_t*)malloc(glb.audioFrequency / 50 * 4); // *2 for stereo, *2 for sizeof(int16)
   SDL_PauseAudioDevice(glb.audioDevice, 0);
   // print version
   SDL_version version;
@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
             case SDLK_p: paused = !paused; break;
             case SDLK_t: turbo = true; break;
             case SDLK_j: {
-              char* filePath = malloc(strlen(glb.prefPath) + 9); // "dump.bin" (8) + '\0'
+              char* filePath = (char*)malloc(strlen(glb.prefPath) + 9); // "dump.bin" (8) + '\0'
               strcpy(filePath, glb.prefPath);
               strcat(filePath, "dump.bin");
               printf("Dumping to %s...\n", filePath);
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
             case SDLK_m: {
               // save state
               int size = snes_saveState(glb.snes, NULL);
-              uint8_t* stateData = malloc(size);
+              uint8_t* stateData = (uint8_t*)malloc(size);
               snes_saveState(glb.snes, stateData);
               FILE* f = fopen(glb.statePath, "wb");
               if(f != NULL) {
@@ -431,7 +431,7 @@ static void closeRom() {
   if(!glb.loaded) return;
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {
-    uint8_t* saveData = malloc(size);
+    uint8_t* saveData = (uint8_t*)malloc(size);
     snes_saveBattery(glb.snes, saveData);
     FILE* f = fopen(glb.savePath, "wb");
     if(f != NULL) {
@@ -454,14 +454,14 @@ static void setPaths(const char* path) {
   } else {
     filename += 1; // skip past '/' or '\' itself
   }
-  glb.romName = malloc(strlen(filename) + 1); // +1 for '\0'
+  glb.romName = (char*)malloc(strlen(filename) + 1); // +1 for '\0'
   strcpy(glb.romName, filename);
   // get extension length
   const char* extStart = strrchr(glb.romName, '.'); // last occurence of '.'
   int extLen = extStart == NULL ? 0 : strlen(extStart);
   // get save name
   if(glb.savePath) free(glb.savePath);
-  glb.savePath = malloc(strlen(glb.prefPath) + strlen(glb.romName) + 11); // "saves/" (6) + ".srm" (4) + '\0'
+  glb.savePath = (char*)malloc(strlen(glb.prefPath) + strlen(glb.romName) + 11); // "saves/" (6) + ".srm" (4) + '\0'
   strcpy(glb.savePath, glb.prefPath);
   strcat(glb.savePath, "saves");
   strcat(glb.savePath, glb.pathSeparator);
@@ -469,7 +469,7 @@ static void setPaths(const char* path) {
   strcat(glb.savePath, ".srm");
   // get state name
   if(glb.statePath) free(glb.statePath);
-  glb.statePath = malloc(strlen(glb.prefPath) + strlen(glb.romName) + 12); // "states/" (7) + ".lss" (4) + '\0'
+  glb.statePath = (char*)malloc(strlen(glb.prefPath) + strlen(glb.romName) + 12); // "states/" (7) + ".lss" (4) + '\0'
   strcpy(glb.statePath, glb.prefPath);
   strcat(glb.statePath, "states");
   strcat(glb.statePath, glb.pathSeparator);
@@ -482,7 +482,7 @@ static void setTitle(const char* romName) {
     SDL_SetWindowTitle(glb.window, "LakeSnes");
     return;
   }
-  char* title = malloc(strlen(romName) + 12); // "LakeSnes - " (11) + '\0'
+  char* title = (char*)malloc(strlen(romName) + 12); // "LakeSnes - " (11) + '\0'
   strcpy(title, "LakeSnes - ");
   strcat(title, romName);
   SDL_SetWindowTitle(glb.window, title);
@@ -495,7 +495,7 @@ static uint8_t* readFile(const char* name, int* length) {
   fseek(f, 0, SEEK_END);
   int size = ftell(f);
   rewind(f);
-  uint8_t* buffer = malloc(size);
+  uint8_t* buffer = (uint8_t*)malloc(size);
   if(fread(buffer, size, 1, f) != 1) {
     fclose(f);
     return NULL;

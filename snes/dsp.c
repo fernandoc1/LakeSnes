@@ -67,7 +67,7 @@ static int16_t dsp_getSample(Dsp* dsp, int ch);
 static void dsp_handleNoise(Dsp* dsp);
 
 Dsp* dsp_init(Apu* apu) {
-  Dsp* dsp = malloc(sizeof(Dsp));
+  Dsp* dsp = (Dsp*)malloc(sizeof(Dsp));
   dsp->apu = apu;
   return dsp;
 }

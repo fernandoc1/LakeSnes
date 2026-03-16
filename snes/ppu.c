@@ -73,7 +73,7 @@ static void ppu_evaluateSprites(Ppu* ppu, int line);
 static uint16_t ppu_getVramRemap(Ppu* ppu);
 
 Ppu* ppu_init(Snes* snes) {
-  Ppu* ppu = malloc(sizeof(Ppu));
+  Ppu* ppu = (Ppu*)malloc(sizeof(Ppu));
   ppu->snes = snes;
   ppu_setPixelOutputFormat(ppu, ppu_pixelOutputFormatBGRX);
   return ppu;

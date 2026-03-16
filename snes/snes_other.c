@@ -92,7 +92,7 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
     }
     newLength *= 2;
   }
-  uint8_t* newData = malloc(newLength);
+  uint8_t* newData = (uint8_t*)malloc(newLength);
   memcpy(newData, data, length);
   int test = 1;
   while(length != newLength) {
