@@ -59,6 +59,7 @@ static int mem_viewer_ensure_manager_thread_locked(void);
 static int mem_viewer_register_viewer_locked(MemViewer *viewer);
 static void mem_viewer_unregister_viewer_locked(MemViewer *viewer);
 static int mem_viewer_manager_main(void *userdata);
+static int mem_viewer_event_watch(void *userdata, SDL_Event *event);
 static int mem_viewer_prepare_window(MemViewer *viewer);
 static void mem_viewer_close_window(MemViewer *viewer);
 static void mem_viewer_refresh_layout(MemViewer *viewer);
@@ -712,12 +713,63 @@ static void mem_viewer_handle_event(MemViewer *viewer, const SDL_Event *event)
     SDL_UnlockMutex(viewer->lock);
 }
 
+static int mem_viewer_event_watch(void *userdata, SDL_Event *event)
+{
+    Uint32 window_id;
+    MemViewer *target;
+
+    (void)userdata;
+
+    if (event == NULL || g_manager_lock == NULL) {
+        return 0;
+    }
+
+    window_id = 0;
+    switch (event->type) {
+    case SDL_WINDOWEVENT:
+        window_id = event->window.windowID;
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+        window_id = event->button.windowID;
+        break;
+    case SDL_MOUSEBUTTONUP:
+        window_id = event->button.windowID;
+        break;
+    case SDL_MOUSEMOTION:
+        window_id = event->motion.windowID;
+        break;
+    case SDL_MOUSEWHEEL:
+        window_id = event->wheel.windowID;
+        break;
+    case SDL_QUIT:
+        SDL_LockMutex(g_manager_lock);
+        for (size_t i = 0; i < g_viewer_count; ++i) {
+            SDL_LockMutex(g_viewers[i]->lock);
+            g_viewers[i]->close_requested = 1;
+            SDL_UnlockMutex(g_viewers[i]->lock);
+        }
+        SDL_UnlockMutex(g_manager_lock);
+        return 0;
+    default:
+        return 0;
+    }
+
+    SDL_LockMutex(g_manager_lock);
+    target = mem_viewer_find_by_window_id_locked(window_id);
+    if (target != NULL) {
+        mem_viewer_handle_event(target, event);
+    }
+    SDL_UnlockMutex(g_manager_lock);
+    return 0;
+}
+
 static int mem_viewer_manager_main(void *userdata)
 {
     (void)userdata;
 
+    SDL_AddEventWatch(mem_viewer_event_watch, NULL);
+
     for (;;) {
-        SDL_Event event;
         int active_windows;
         int pending_work;
         size_t i;
@@ -733,41 +785,7 @@ static int mem_viewer_manager_main(void *userdata)
             }
         }
 
-        while (SDL_PollEvent(&event)) {
-            Uint32 window_id;
-            MemViewer *target;
-
-            window_id = 0;
-            switch (event.type) {
-            case SDL_WINDOWEVENT:
-                window_id = event.window.windowID;
-                break;
-            case SDL_MOUSEBUTTONDOWN:
-                window_id = event.button.windowID;
-                break;
-            case SDL_MOUSEBUTTONUP:
-                window_id = event.button.windowID;
-                break;
-            case SDL_MOUSEMOTION:
-                window_id = event.motion.windowID;
-                break;
-            case SDL_MOUSEWHEEL:
-                window_id = event.wheel.windowID;
-                break;
-            case SDL_QUIT:
-                for (i = 0; i < g_viewer_count; ++i) {
-                    SDL_LockMutex(g_viewers[i]->lock);
-                    g_viewers[i]->close_requested = 1;
-                    SDL_UnlockMutex(g_viewers[i]->lock);
-                }
-                continue;
-            default:
-                continue;
-            }
-
-            target = mem_viewer_find_by_window_id_locked(window_id);
-            mem_viewer_handle_event(target, &event);
-        }
+        SDL_PumpEvents();
 
         active_windows = 0;
         pending_work = 0;
@@ -795,6 +813,7 @@ static int mem_viewer_manager_main(void *userdata)
             g_manager_thread = NULL;
             SDL_CondBroadcast(g_manager_cond);
             SDL_UnlockMutex(g_manager_lock);
+            SDL_DelEventWatch(mem_viewer_event_watch, NULL);
             break;
         }
 
