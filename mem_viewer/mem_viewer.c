@@ -1,830 +1,611 @@
 #include "mem_viewer.h"
 
-#include <SDL.h>
-
+#include <gtk/gtk.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <X11/Xlib.h>
 
-#define MEM_VIEWER_BYTES_PER_ROW 16
-#define MEM_VIEWER_PADDING 12
-#define MEM_VIEWER_GLYPH_W 5
-#define MEM_VIEWER_GLYPH_H 7
-#define MEM_VIEWER_ADDRESS_DIGITS 8
-#define MEM_VIEWER_SCROLLBAR_W 12
-#define MEM_VIEWER_SCROLLBAR_MIN_THUMB_H 24
+#define MEM_VIEWER_BYTES_PER_ROW 16U
+
+typedef int (*MemViewerGtkTask)(void *userdata);
+
+typedef struct {
+    MemViewerGtkTask task;
+    void *userdata;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int completed;
+    int result;
+} MemViewerSyncCall;
 
 struct MemViewer {
-    const uint8_t *memory;
+    uint8_t *memory;
     size_t size;
-    SDL_Window *window;
-    SDL_Surface *surface;
-    SDL_mutex *lock;
-    SDL_cond *cond;
-    Uint32 window_id;
-    int owns_video;
-    int is_open;
-    int open_requested;
-    int open_failed;
-    int close_requested;
-    int dragging_scrollbar;
-    int scrollbar_drag_offset;
-    int window_width;
-    int window_height;
-    int rows_visible;
-    int font_scale;
-    int cell_w;
-    int cell_h;
-    size_t first_row;
+    pthread_mutex_t lock;
+    int lock_initialized;
+    int closed;
+    GtkWidget *window;
+    GtkWidget *scroller;
+    GtkWidget *text_view;
+    GtkWidget *status_label;
 };
 
 typedef struct {
-    char ch;
-    uint8_t rows[MEM_VIEWER_GLYPH_H];
-} Glyph;
+    MemViewer *viewer;
+    const char *text;
+} MemViewerSetTextArgs;
 
-static int g_sdl_video_users = 0;
-static SDL_mutex *g_manager_lock = NULL;
-static SDL_cond *g_manager_cond = NULL;
-static SDL_Thread *g_manager_thread = NULL;
-static MemViewer **g_viewers = NULL;
-static size_t g_viewer_count = 0;
-static size_t g_viewer_capacity = 0;
-static int g_manager_running = 0;
-static int g_manager_stop_requested = 0;
+typedef struct {
+    MemViewer *viewer;
+    char *buffer;
+    size_t buffer_size;
+    size_t required_size;
+} MemViewerCopyTextArgs;
 
-static int mem_viewer_ensure_video(void);
-static void mem_viewer_release_video(void);
-static int mem_viewer_ensure_manager_primitives(void);
-static int mem_viewer_ensure_manager_thread_locked(void);
-static int mem_viewer_register_viewer_locked(MemViewer *viewer);
-static void mem_viewer_unregister_viewer_locked(MemViewer *viewer);
-static int mem_viewer_manager_main(void *userdata);
-static int mem_viewer_event_watch(void *userdata, SDL_Event *event);
-static int mem_viewer_prepare_window(MemViewer *viewer);
-static void mem_viewer_close_window(MemViewer *viewer);
-static void mem_viewer_refresh_layout(MemViewer *viewer);
-static void mem_viewer_draw(MemViewer *viewer);
-static int mem_viewer_scrollbar_track_h(const MemViewer *viewer);
-static int mem_viewer_scrollbar_thumb_h(const MemViewer *viewer);
-static int mem_viewer_scrollbar_thumb_y(const MemViewer *viewer);
-static void mem_viewer_scroll_to_thumb_y(MemViewer *viewer, int thumb_y);
+typedef struct {
+    MemViewer *viewer;
+    int x;
+    int y;
+} MemViewerMoveWindowArgs;
 
-static const Glyph g_glyphs[] = {
-    { '0', { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E } },
-    { '1', { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E } },
-    { '2', { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F } },
-    { '3', { 0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E } },
-    { '4', { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 } },
-    { '5', { 0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E } },
-    { '6', { 0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E } },
-    { '7', { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 } },
-    { '8', { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E } },
-    { '9', { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E } },
-    { 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } },
-    { 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
-    { 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } },
-    { 'D', { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E } },
-    { 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } },
-    { 'F', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 } },
-    { ':', { 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 } },
-};
+typedef struct {
+    MemViewer *viewer;
+    size_t offset;
+} MemViewerScrollArgs;
 
-static const Glyph *mem_viewer_find_glyph(char ch)
+static pthread_mutex_t g_backend_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_backend_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t g_backend_thread;
+static pthread_once_t g_x11_threads_once = PTHREAD_ONCE_INIT;
+static int g_backend_started = 0;
+static int g_backend_ready = 0;
+static int g_backend_failed = 0;
+static int g_backend_refcount = 0;
+static GMainLoop *g_backend_loop = NULL;
+
+static gchar *mem_viewer_format_memory(const uint8_t *memory, size_t size);
+static int mem_viewer_parse_memory(const char *text, uint8_t *memory, size_t size, gchar **error_message);
+static int mem_viewer_ensure_backend(void);
+static void mem_viewer_release_backend(void);
+static int mem_viewer_invoke(MemViewerGtkTask task, void *userdata);
+static int mem_viewer_create_window_task(void *userdata);
+static int mem_viewer_reload_view_task(void *userdata);
+static int mem_viewer_destroy_view_task(void *userdata);
+static int mem_viewer_set_text_task(void *userdata);
+static int mem_viewer_copy_text_task(void *userdata);
+static int mem_viewer_apply_task(void *userdata);
+static int mem_viewer_move_window_task(void *userdata);
+static int mem_viewer_scroll_to_offset_task(void *userdata);
+
+static void mem_viewer_init_x11_threads(void)
 {
-    size_t i;
-
-    for (i = 0; i < sizeof(g_glyphs) / sizeof(g_glyphs[0]); ++i) {
-        if (g_glyphs[i].ch == ch) {
-            return &g_glyphs[i];
-        }
-    }
-
-    return NULL;
+    XInitThreads();
 }
 
-static int mem_viewer_ensure_video(void)
+static gchar *mem_viewer_format_memory(const uint8_t *memory, size_t size)
 {
-    if (g_sdl_video_users == 0) {
-        if ((SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) == 0) {
-            if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
-                return -1;
+    GString *text;
+    size_t offset;
+
+    text = g_string_sized_new(((size + MEM_VIEWER_BYTES_PER_ROW - 1U) / MEM_VIEWER_BYTES_PER_ROW) * 60U + 1U);
+    for (offset = 0U; offset < size; offset += MEM_VIEWER_BYTES_PER_ROW) {
+        size_t row_bytes;
+
+        row_bytes = size - offset;
+        if (row_bytes > MEM_VIEWER_BYTES_PER_ROW) {
+            row_bytes = MEM_VIEWER_BYTES_PER_ROW;
+        }
+
+        g_string_append_printf(text, "%08zx:", offset);
+        for (size_t i = 0U; i < MEM_VIEWER_BYTES_PER_ROW; ++i) {
+            if (i < row_bytes) {
+                g_string_append_printf(text, " %02X", memory[offset + i]);
+            } else {
+                g_string_append(text, "   ");
             }
         }
+        g_string_append_c(text, '\n');
     }
 
-    ++g_sdl_video_users;
-    return 0;
+    return g_string_free(text, FALSE);
 }
 
-static void mem_viewer_release_video(void)
+static int mem_viewer_hex_value(char ch)
 {
-    if (g_sdl_video_users <= 0) {
-        return;
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
     }
-
-    --g_sdl_video_users;
-    if (g_sdl_video_users == 0) {
-        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
     }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
 }
 
-static int mem_viewer_ensure_manager_primitives(void)
+static int mem_viewer_parse_memory(const char *text, uint8_t *memory, size_t size, gchar **error_message)
 {
-    if (g_manager_lock == NULL) {
-        g_manager_lock = SDL_CreateMutex();
-        if (g_manager_lock == NULL) {
-            return -1;
+    const char *cursor;
+    size_t written;
+
+    cursor = text;
+    written = 0U;
+    while (*cursor != '\0') {
+        const char *line_end;
+        const char *colon;
+
+        line_end = strchr(cursor, '\n');
+        if (line_end == NULL) {
+            line_end = cursor + strlen(cursor);
         }
-    }
-
-    if (g_manager_cond == NULL) {
-        g_manager_cond = SDL_CreateCond();
-        if (g_manager_cond == NULL) {
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-static int mem_viewer_ensure_manager_thread_locked(void)
-{
-    SDL_Thread *thread;
-
-    while (g_manager_running && g_manager_stop_requested) {
-        SDL_CondWait(g_manager_cond, g_manager_lock);
-    }
-
-    if (g_manager_running) {
-        return 0;
-    }
-
-    g_manager_stop_requested = 0;
-    thread = SDL_CreateThread(mem_viewer_manager_main, "mem-viewer-manager", NULL);
-    if (thread == NULL) {
-        return -1;
-    }
-
-    g_manager_thread = thread;
-    g_manager_running = 1;
-    return 0;
-}
-
-static int mem_viewer_register_viewer_locked(MemViewer *viewer)
-{
-    MemViewer **new_viewers;
-    size_t new_capacity;
-
-    if (g_viewer_count == g_viewer_capacity) {
-        new_capacity = g_viewer_capacity == 0 ? 4 : g_viewer_capacity * 2;
-        new_viewers = (MemViewer **)realloc(g_viewers, new_capacity * sizeof(*new_viewers));
-        if (new_viewers == NULL) {
-            return -1;
-        }
-
-        g_viewers = new_viewers;
-        g_viewer_capacity = new_capacity;
-    }
-
-    g_viewers[g_viewer_count] = viewer;
-    ++g_viewer_count;
-    return 0;
-}
-
-static void mem_viewer_unregister_viewer_locked(MemViewer *viewer)
-{
-    size_t i;
-
-    for (i = 0; i < g_viewer_count; ++i) {
-        if (g_viewers[i] != viewer) {
+        if (line_end == cursor) {
+            cursor = *line_end == '\0' ? line_end : line_end + 1;
             continue;
         }
 
-        for (; i + 1 < g_viewer_count; ++i) {
-            g_viewers[i] = g_viewers[i + 1];
+        colon = memchr(cursor, ':', (size_t)(line_end - cursor));
+        if (colon == NULL) {
+            *error_message = g_strdup("Each line must contain an address followed by ':'.");
+            return -1;
         }
-        --g_viewer_count;
-        return;
-    }
-}
 
-static int mem_viewer_total_cell_w(const MemViewer *viewer)
-{
-    return viewer->cell_w;
-}
+        cursor = colon + 1;
+        while (cursor < line_end) {
+            int high;
+            int low;
 
-static int mem_viewer_total_cell_h(const MemViewer *viewer)
-{
-    return viewer->cell_h;
-}
+            while (cursor < line_end && g_ascii_isspace((guchar)*cursor)) {
+                ++cursor;
+            }
+            if (cursor >= line_end) {
+                break;
+            }
+            if ((line_end - cursor) < 2) {
+                *error_message = g_strdup("Found an incomplete hex byte.");
+                return -1;
+            }
 
-static void mem_viewer_put_pixel(SDL_Surface *surface, int x, int y, uint32_t color)
-{
-    uint8_t *row;
-    uint32_t *pixel;
+            high = mem_viewer_hex_value(cursor[0]);
+            low = mem_viewer_hex_value(cursor[1]);
+            if (high < 0 || low < 0) {
+                *error_message = g_strdup("Found a non-hexadecimal byte value.");
+                return -1;
+            }
+            if (written >= size) {
+                *error_message = g_strdup("The editor contains more bytes than the mapped memory region.");
+                return -1;
+            }
 
-    if (x < 0 || y < 0 || x >= surface->w || y >= surface->h) {
-        return;
-    }
+            memory[written] = (uint8_t)((high << 4) | low);
+            written += 1U;
+            cursor += 2;
 
-    row = (uint8_t *)surface->pixels + (y * surface->pitch);
-    pixel = (uint32_t *)(row + (x * 4));
-    *pixel = color;
-}
-
-static void mem_viewer_fill_rect(SDL_Surface *surface, int x, int y, int w, int h, uint32_t color)
-{
-    int yy;
-    int xx;
-
-    for (yy = 0; yy < h; ++yy) {
-        for (xx = 0; xx < w; ++xx) {
-            mem_viewer_put_pixel(surface, x + xx, y + yy, color);
-        }
-    }
-}
-
-static void mem_viewer_draw_glyph(
-    SDL_Surface *surface,
-    const MemViewer *viewer,
-    int x,
-    int y,
-    char ch,
-    uint32_t color
-)
-{
-    const Glyph *glyph;
-    int gy;
-    int gx;
-
-    glyph = mem_viewer_find_glyph(ch);
-    if (glyph == NULL) {
-        return;
-    }
-
-    for (gy = 0; gy < MEM_VIEWER_GLYPH_H; ++gy) {
-        for (gx = 0; gx < MEM_VIEWER_GLYPH_W; ++gx) {
-            if ((glyph->rows[gy] >> (MEM_VIEWER_GLYPH_W - 1 - gx)) & 1) {
-                mem_viewer_fill_rect(
-                    surface,
-                    x + (gx * viewer->font_scale),
-                    y + (gy * viewer->font_scale),
-                    viewer->font_scale,
-                    viewer->font_scale,
-                    color
-                );
+            while (cursor < line_end && g_ascii_isspace((guchar)*cursor)) {
+                ++cursor;
             }
         }
-    }
-}
 
-static void mem_viewer_draw_text(
-    SDL_Surface *surface,
-    const MemViewer *viewer,
-    int x,
-    int y,
-    const char *text,
-    uint32_t color
-)
-{
-    int cursor_x;
-
-    cursor_x = x;
-    while (*text != '\0') {
-        if (*text != ' ') {
-            mem_viewer_draw_glyph(surface, viewer, cursor_x, y, *text, color);
-        }
-        cursor_x += mem_viewer_total_cell_w(viewer);
-        ++text;
-    }
-}
-
-static void mem_viewer_format_hex32(uint32_t value, char out[MEM_VIEWER_ADDRESS_DIGITS + 1])
-{
-    static const char digits[] = "0123456789ABCDEF";
-    int i;
-
-    for (i = MEM_VIEWER_ADDRESS_DIGITS - 1; i >= 0; --i) {
-        out[i] = digits[value & 0x0F];
-        value >>= 4;
-    }
-    out[MEM_VIEWER_ADDRESS_DIGITS] = '\0';
-}
-
-static void mem_viewer_format_hex8(uint8_t value, char out[3])
-{
-    static const char digits[] = "0123456789ABCDEF";
-
-    out[0] = digits[(value >> 4) & 0x0F];
-    out[1] = digits[value & 0x0F];
-    out[2] = '\0';
-}
-
-static size_t mem_viewer_total_rows(const MemViewer *viewer)
-{
-    return (viewer->size + MEM_VIEWER_BYTES_PER_ROW - 1) / MEM_VIEWER_BYTES_PER_ROW;
-}
-
-static void mem_viewer_clamp_scroll(MemViewer *viewer)
-{
-    size_t total_rows;
-    size_t max_first_row;
-
-    total_rows = mem_viewer_total_rows(viewer);
-    max_first_row = 0;
-    if (total_rows > (size_t)viewer->rows_visible) {
-        max_first_row = total_rows - (size_t)viewer->rows_visible;
-    }
-    if (viewer->first_row > max_first_row) {
-        viewer->first_row = max_first_row;
-    }
-}
-
-static void mem_viewer_refresh_layout(MemViewer *viewer)
-{
-    SDL_GetWindowSize(viewer->window, &viewer->window_width, &viewer->window_height);
-    viewer->surface = SDL_GetWindowSurface(viewer->window);
-    viewer->rows_visible = (viewer->window_height - (MEM_VIEWER_PADDING * 2)) / mem_viewer_total_cell_h(viewer);
-    if (viewer->rows_visible < 1) {
-        viewer->rows_visible = 1;
-    }
-    mem_viewer_clamp_scroll(viewer);
-}
-
-static int mem_viewer_scrollbar_track_h(const MemViewer *viewer)
-{
-    return viewer->window_height - (MEM_VIEWER_PADDING * 2);
-}
-
-static int mem_viewer_scrollbar_thumb_h(const MemViewer *viewer)
-{
-    int track_h;
-    size_t total_rows;
-    int thumb_h;
-
-    track_h = mem_viewer_scrollbar_track_h(viewer);
-    total_rows = mem_viewer_total_rows(viewer);
-    if (track_h <= 0 || total_rows == 0 || total_rows <= (size_t)viewer->rows_visible) {
-        return track_h;
+        cursor = *line_end == '\0' ? line_end : line_end + 1;
     }
 
-    thumb_h = (int)((track_h * (size_t)viewer->rows_visible) / total_rows);
-    if (thumb_h < MEM_VIEWER_SCROLLBAR_MIN_THUMB_H) {
-        thumb_h = MEM_VIEWER_SCROLLBAR_MIN_THUMB_H;
-    }
-    if (thumb_h > track_h) {
-        thumb_h = track_h;
-    }
-    return thumb_h;
-}
-
-static int mem_viewer_scrollbar_thumb_y(const MemViewer *viewer)
-{
-    int track_h;
-    int thumb_h;
-    size_t total_rows;
-    size_t max_first_row;
-    int travel;
-
-    track_h = mem_viewer_scrollbar_track_h(viewer);
-    thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
-    total_rows = mem_viewer_total_rows(viewer);
-    if (track_h <= 0 || total_rows <= (size_t)viewer->rows_visible) {
-        return MEM_VIEWER_PADDING;
-    }
-
-    max_first_row = total_rows - (size_t)viewer->rows_visible;
-    travel = track_h - thumb_h;
-    if (travel <= 0 || max_first_row == 0) {
-        return MEM_VIEWER_PADDING;
-    }
-
-    return MEM_VIEWER_PADDING + (int)((viewer->first_row * (size_t)travel) / max_first_row);
-}
-
-static void mem_viewer_scroll_to_thumb_y(MemViewer *viewer, int thumb_y)
-{
-    int track_h;
-    int thumb_h;
-    int min_y;
-    int max_y;
-    size_t total_rows;
-    size_t max_first_row;
-
-    track_h = mem_viewer_scrollbar_track_h(viewer);
-    thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
-    total_rows = mem_viewer_total_rows(viewer);
-    if (track_h <= 0 || total_rows <= (size_t)viewer->rows_visible) {
-        viewer->first_row = 0;
-        return;
-    }
-
-    min_y = MEM_VIEWER_PADDING;
-    max_y = MEM_VIEWER_PADDING + track_h - thumb_h;
-    if (thumb_y < min_y) {
-        thumb_y = min_y;
-    }
-    if (thumb_y > max_y) {
-        thumb_y = max_y;
-    }
-
-    max_first_row = total_rows - (size_t)viewer->rows_visible;
-    if (max_y == min_y || max_first_row == 0) {
-        viewer->first_row = 0;
-        return;
-    }
-
-    viewer->first_row = ((size_t)(thumb_y - min_y) * max_first_row) / (size_t)(max_y - min_y);
-}
-
-static int mem_viewer_prepare_window(MemViewer *viewer)
-{
-    SDL_LockMutex(viewer->lock);
-    if (!viewer->open_requested || viewer->close_requested) {
-        SDL_UnlockMutex(viewer->lock);
-        return -1;
-    }
-    SDL_UnlockMutex(viewer->lock);
-
-    viewer->window = SDL_CreateWindow(
-        "Memory Viewer",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        760,
-        420,
-        SDL_WINDOW_RESIZABLE
-    );
-    if (viewer->window == NULL) {
-        SDL_LockMutex(viewer->lock);
-        viewer->open_failed = 1;
-        viewer->open_requested = 0;
-        SDL_CondBroadcast(viewer->cond);
-        SDL_UnlockMutex(viewer->lock);
+    if (written != size) {
+        *error_message = g_strdup_printf(
+            "The editor describes %zu bytes, but the mapped region contains %zu bytes.",
+            written,
+            size
+        );
         return -1;
     }
 
-    viewer->window_id = SDL_GetWindowID(viewer->window);
-    SDL_ShowWindow(viewer->window);
-    mem_viewer_refresh_layout(viewer);
-
-    SDL_LockMutex(viewer->lock);
-    if (viewer->surface == NULL) {
-        viewer->open_failed = 1;
-        viewer->open_requested = 0;
-        SDL_CondBroadcast(viewer->cond);
-        SDL_UnlockMutex(viewer->lock);
-        mem_viewer_close_window(viewer);
-        return -1;
-    }
-
-    viewer->is_open = 1;
-    viewer->open_requested = 0;
-    viewer->open_failed = 0;
-    SDL_CondBroadcast(viewer->cond);
-    SDL_UnlockMutex(viewer->lock);
-
-    mem_viewer_draw(viewer);
     return 0;
 }
 
-static void mem_viewer_close_window(MemViewer *viewer)
+static void mem_viewer_set_status(MemViewer *viewer, const char *status)
 {
-    SDL_Window *window;
+    gtk_label_set_text(GTK_LABEL(viewer->status_label), status);
+}
 
-    if (viewer == NULL || viewer->window == NULL) {
-        SDL_LockMutex(viewer->lock);
-        viewer->is_open = 0;
-        viewer->open_requested = 0;
-        SDL_CondBroadcast(viewer->cond);
-        SDL_UnlockMutex(viewer->lock);
+static void mem_viewer_reload_buffer(MemViewer *viewer)
+{
+    GtkTextBuffer *buffer;
+    gchar *formatted;
+    char status[128];
+
+    if (viewer->window == NULL || viewer->text_view == NULL || viewer->status_label == NULL) {
         return;
     }
 
-    SDL_LockMutex(viewer->lock);
-    window = viewer->window;
+    formatted = mem_viewer_format_memory(viewer->memory, viewer->size);
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    gtk_text_buffer_set_text(buffer, formatted, -1);
+    snprintf(status, sizeof(status), "Viewing %zu bytes", viewer->size);
+    mem_viewer_set_status(viewer, status);
+    g_free(formatted);
+}
+
+static void mem_viewer_on_apply_clicked(GtkButton *button, gpointer userdata)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter start;
+    GtkTextIter end;
+    gchar *text;
+    gchar *error_message;
+    MemViewer *viewer;
+
+    (void)button;
+    viewer = (MemViewer *)userdata;
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    error_message = NULL;
+    if (mem_viewer_parse_memory(text, viewer->memory, viewer->size, &error_message) != 0) {
+        mem_viewer_set_status(viewer, error_message);
+        g_free(error_message);
+        g_free(text);
+        return;
+    }
+
+    mem_viewer_set_status(viewer, "Applied changes to memory");
+    g_free(text);
+}
+
+static void mem_viewer_on_reload_clicked(GtkButton *button, gpointer userdata)
+{
+    (void)button;
+    mem_viewer_reload_buffer((MemViewer *)userdata);
+}
+
+static void mem_viewer_on_window_destroy(GtkWidget *widget, gpointer userdata)
+{
+    MemViewer *viewer;
+
+    (void)widget;
+    viewer = (MemViewer *)userdata;
+    pthread_mutex_lock(&viewer->lock);
+    viewer->closed = 1;
     viewer->window = NULL;
-    viewer->surface = NULL;
-    viewer->window_id = 0;
-    viewer->is_open = 0;
-    viewer->open_requested = 0;
-    SDL_CondBroadcast(viewer->cond);
-    SDL_UnlockMutex(viewer->lock);
-
-    SDL_DestroyWindow(window);
+    viewer->scroller = NULL;
+    viewer->text_view = NULL;
+    viewer->status_label = NULL;
+    pthread_mutex_unlock(&viewer->lock);
 }
 
-static void mem_viewer_scroll(MemViewer *viewer, int delta_rows)
+static gboolean mem_viewer_sync_call_main(gpointer userdata)
 {
-    size_t total_rows;
-    size_t max_first_row;
-    long next_row;
+    MemViewerSyncCall *call;
 
-    total_rows = mem_viewer_total_rows(viewer);
-    max_first_row = 0;
-    if (total_rows > (size_t)viewer->rows_visible) {
-        max_first_row = total_rows - (size_t)viewer->rows_visible;
-    }
+    call = (MemViewerSyncCall *)userdata;
+    call->result = call->task(call->userdata);
 
-    next_row = (long)viewer->first_row + delta_rows;
-    if (next_row < 0) {
-        next_row = 0;
-    }
-    if ((size_t)next_row > max_first_row) {
-        next_row = (long)max_first_row;
-    }
-
-    viewer->first_row = (size_t)next_row;
+    pthread_mutex_lock(&call->lock);
+    call->completed = 1;
+    pthread_cond_signal(&call->cond);
+    pthread_mutex_unlock(&call->lock);
+    return G_SOURCE_REMOVE;
 }
 
-static void mem_viewer_draw(MemViewer *viewer)
+static void *mem_viewer_backend_main(void *userdata)
 {
-    uint32_t bg;
-    uint32_t fg;
-    uint32_t scrollbar_bg;
-    uint32_t scrollbar_fg;
-    int row;
-    size_t row_index;
-    int y;
-    SDL_Surface *surface;
+    GMainLoop *loop;
 
-    SDL_LockMutex(viewer->lock);
-    surface = viewer->surface;
-    if (!viewer->is_open || surface == NULL || viewer->memory == NULL || viewer->size == 0) {
-        SDL_UnlockMutex(viewer->lock);
-        return;
+    (void)userdata;
+
+    if (!gtk_init_check(0, NULL)) {
+        pthread_mutex_lock(&g_backend_lock);
+        g_backend_failed = 1;
+        pthread_cond_broadcast(&g_backend_cond);
+        pthread_mutex_unlock(&g_backend_lock);
+        return NULL;
     }
 
-    bg = SDL_MapRGB(surface->format, 10, 12, 16);
-    fg = SDL_MapRGB(surface->format, 120, 255, 160);
-    scrollbar_bg = SDL_MapRGB(surface->format, 26, 30, 36);
-    scrollbar_fg = SDL_MapRGB(surface->format, 90, 130, 110);
+    loop = g_main_loop_new(NULL, FALSE);
 
-    SDL_LockSurface(surface);
-    SDL_FillRect(surface, NULL, bg);
+    pthread_mutex_lock(&g_backend_lock);
+    g_backend_loop = loop;
+    g_backend_ready = 1;
+    pthread_cond_broadcast(&g_backend_cond);
+    pthread_mutex_unlock(&g_backend_lock);
 
-    for (row = 0; row < viewer->rows_visible; ++row) {
-        char address_text[MEM_VIEWER_ADDRESS_DIGITS + 1];
-        size_t base;
-        int x;
-        int col;
+    g_main_loop_run(loop);
 
-        row_index = viewer->first_row + (size_t)row;
-        base = row_index * MEM_VIEWER_BYTES_PER_ROW;
-        if (base >= viewer->size) {
-            break;
-        }
+    pthread_mutex_lock(&g_backend_lock);
+    g_backend_loop = NULL;
+    g_backend_ready = 0;
+    pthread_cond_broadcast(&g_backend_cond);
+    pthread_mutex_unlock(&g_backend_lock);
 
-        y = MEM_VIEWER_PADDING + (row * mem_viewer_total_cell_h(viewer));
-        mem_viewer_format_hex32((uint32_t)base, address_text);
-        mem_viewer_draw_text(surface, viewer, MEM_VIEWER_PADDING, y, address_text, fg);
-        mem_viewer_draw_text(
-            surface,
-            viewer,
-            MEM_VIEWER_PADDING + (MEM_VIEWER_ADDRESS_DIGITS * mem_viewer_total_cell_w(viewer)),
-            y,
-            ":",
-            fg
-        );
-
-        x = MEM_VIEWER_PADDING + ((MEM_VIEWER_ADDRESS_DIGITS + 1) * mem_viewer_total_cell_w(viewer));
-        for (col = 0; col < MEM_VIEWER_BYTES_PER_ROW; ++col) {
-            char byte_text[3];
-            size_t index;
-
-            index = base + (size_t)col;
-            if (index >= viewer->size) {
-                break;
-            }
-
-            mem_viewer_format_hex8(viewer->memory[index], byte_text);
-            mem_viewer_draw_text(surface, viewer, x, y, byte_text, fg);
-            x += mem_viewer_total_cell_w(viewer) * 2;
-        }
-    }
-
-    if (mem_viewer_total_rows(viewer) > (size_t)viewer->rows_visible) {
-        int scrollbar_x;
-        int track_y;
-        int track_h;
-        int thumb_y;
-        int thumb_h;
-
-        scrollbar_x = viewer->window_width - MEM_VIEWER_PADDING - MEM_VIEWER_SCROLLBAR_W;
-        track_y = MEM_VIEWER_PADDING;
-        track_h = mem_viewer_scrollbar_track_h(viewer);
-        thumb_y = mem_viewer_scrollbar_thumb_y(viewer);
-        thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
-
-        mem_viewer_fill_rect(surface, scrollbar_x, track_y, MEM_VIEWER_SCROLLBAR_W, track_h, scrollbar_bg);
-        mem_viewer_fill_rect(surface, scrollbar_x, thumb_y, MEM_VIEWER_SCROLLBAR_W, thumb_h, scrollbar_fg);
-    }
-
-    SDL_UnlockSurface(surface);
-    SDL_UpdateWindowSurface(viewer->window);
-    SDL_UnlockMutex(viewer->lock);
-}
-
-static MemViewer *mem_viewer_find_by_window_id_locked(Uint32 window_id)
-{
-    size_t i;
-
-    for (i = 0; i < g_viewer_count; ++i) {
-        if (g_viewers[i] != NULL && g_viewers[i]->window_id == window_id) {
-            return g_viewers[i];
-        }
-    }
-
+    g_main_loop_unref(loop);
     return NULL;
 }
 
-static void mem_viewer_handle_event(MemViewer *viewer, const SDL_Event *event)
+static int mem_viewer_ensure_backend(void)
 {
-    if (viewer == NULL || event == NULL) {
-        return;
-    }
+    int rc;
 
-    SDL_LockMutex(viewer->lock);
-    if (!viewer->is_open) {
-        SDL_UnlockMutex(viewer->lock);
-        return;
-    }
+    pthread_once(&g_x11_threads_once, mem_viewer_init_x11_threads);
 
-    if (event->type == SDL_WINDOWEVENT) {
-        if (event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-            SDL_UnlockMutex(viewer->lock);
-            mem_viewer_refresh_layout(viewer);
-            return;
+    pthread_mutex_lock(&g_backend_lock);
+    if (!g_backend_started) {
+        g_backend_failed = 0;
+        g_backend_ready = 0;
+        rc = pthread_create(&g_backend_thread, NULL, mem_viewer_backend_main, NULL);
+        if (rc != 0) {
+            pthread_mutex_unlock(&g_backend_lock);
+            return -1;
         }
-        if (event->window.event == SDL_WINDOWEVENT_CLOSE) {
-            viewer->close_requested = 1;
-            SDL_UnlockMutex(viewer->lock);
-            return;
-        }
-        SDL_UnlockMutex(viewer->lock);
-        return;
+        g_backend_started = 1;
     }
 
-    if (event->type == SDL_MOUSEWHEEL) {
-        mem_viewer_scroll(viewer, -event->wheel.y);
-        SDL_UnlockMutex(viewer->lock);
-        return;
+    while (g_backend_started && !g_backend_ready && !g_backend_failed) {
+        pthread_cond_wait(&g_backend_cond, &g_backend_lock);
     }
 
-    if (event->type == SDL_MOUSEBUTTONDOWN && event->button.button == SDL_BUTTON_LEFT) {
-        if (mem_viewer_total_rows(viewer) > (size_t)viewer->rows_visible) {
-            int scrollbar_x;
-            int thumb_y;
-            int thumb_h;
-
-            scrollbar_x = viewer->window_width - MEM_VIEWER_PADDING - MEM_VIEWER_SCROLLBAR_W;
-            thumb_y = mem_viewer_scrollbar_thumb_y(viewer);
-            thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
-            if (event->button.x >= scrollbar_x &&
-                event->button.x < scrollbar_x + MEM_VIEWER_SCROLLBAR_W &&
-                event->button.y >= MEM_VIEWER_PADDING &&
-                event->button.y < MEM_VIEWER_PADDING + mem_viewer_scrollbar_track_h(viewer)) {
-                viewer->dragging_scrollbar = 1;
-                if (event->button.y >= thumb_y && event->button.y < thumb_y + thumb_h) {
-                    viewer->scrollbar_drag_offset = event->button.y - thumb_y;
-                } else {
-                    viewer->scrollbar_drag_offset = thumb_h / 2;
-                    mem_viewer_scroll_to_thumb_y(viewer, event->button.y - viewer->scrollbar_drag_offset);
-                }
-            }
-        }
-        SDL_UnlockMutex(viewer->lock);
-        return;
+    if (g_backend_failed) {
+        pthread_join(g_backend_thread, NULL);
+        g_backend_started = 0;
+        g_backend_failed = 0;
+        pthread_mutex_unlock(&g_backend_lock);
+        return -1;
     }
 
-    if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT) {
-        viewer->dragging_scrollbar = 0;
-        SDL_UnlockMutex(viewer->lock);
-        return;
-    }
-
-    if (event->type == SDL_MOUSEMOTION) {
-        if (viewer->dragging_scrollbar) {
-            mem_viewer_scroll_to_thumb_y(viewer, event->motion.y - viewer->scrollbar_drag_offset);
-        }
-        SDL_UnlockMutex(viewer->lock);
-        return;
-    }
-
-    SDL_UnlockMutex(viewer->lock);
-}
-
-static int mem_viewer_event_watch(void *userdata, SDL_Event *event)
-{
-    Uint32 window_id;
-    MemViewer *target;
-
-    (void)userdata;
-
-    if (event == NULL || g_manager_lock == NULL) {
-        return 0;
-    }
-
-    window_id = 0;
-    switch (event->type) {
-    case SDL_WINDOWEVENT:
-        window_id = event->window.windowID;
-        break;
-    case SDL_MOUSEBUTTONDOWN:
-        window_id = event->button.windowID;
-        break;
-    case SDL_MOUSEBUTTONUP:
-        window_id = event->button.windowID;
-        break;
-    case SDL_MOUSEMOTION:
-        window_id = event->motion.windowID;
-        break;
-    case SDL_MOUSEWHEEL:
-        window_id = event->wheel.windowID;
-        break;
-    case SDL_QUIT:
-        SDL_LockMutex(g_manager_lock);
-        for (size_t i = 0; i < g_viewer_count; ++i) {
-            SDL_LockMutex(g_viewers[i]->lock);
-            g_viewers[i]->close_requested = 1;
-            SDL_UnlockMutex(g_viewers[i]->lock);
-        }
-        SDL_UnlockMutex(g_manager_lock);
-        return 0;
-    default:
-        return 0;
-    }
-
-    SDL_LockMutex(g_manager_lock);
-    target = mem_viewer_find_by_window_id_locked(window_id);
-    if (target != NULL) {
-        mem_viewer_handle_event(target, event);
-    }
-    SDL_UnlockMutex(g_manager_lock);
+    g_backend_refcount += 1;
+    pthread_mutex_unlock(&g_backend_lock);
     return 0;
 }
 
-static int mem_viewer_manager_main(void *userdata)
+static gboolean mem_viewer_quit_backend(gpointer userdata)
 {
     (void)userdata;
+    if (g_backend_loop != NULL) {
+        g_main_loop_quit(g_backend_loop);
+    }
+    return G_SOURCE_REMOVE;
+}
 
-    SDL_AddEventWatch(mem_viewer_event_watch, NULL);
+static void mem_viewer_release_backend(void)
+{
+    int should_join;
+    pthread_t thread;
 
-    for (;;) {
-        int active_windows;
-        int pending_work;
-        size_t i;
+    should_join = 0;
+    pthread_mutex_lock(&g_backend_lock);
+    if (g_backend_refcount > 0) {
+        g_backend_refcount -= 1;
+    }
+    if (g_backend_refcount == 0 && g_backend_started) {
+        thread = g_backend_thread;
+        should_join = 1;
+    }
+    pthread_mutex_unlock(&g_backend_lock);
 
-        SDL_LockMutex(g_manager_lock);
-        for (i = 0; i < g_viewer_count; ++i) {
-            SDL_LockMutex(g_viewers[i]->lock);
-            if (g_viewers[i]->open_requested && g_viewers[i]->window == NULL) {
-                SDL_UnlockMutex(g_viewers[i]->lock);
-                mem_viewer_prepare_window(g_viewers[i]);
-            } else {
-                SDL_UnlockMutex(g_viewers[i]->lock);
-            }
-        }
-
-        SDL_PumpEvents();
-
-        active_windows = 0;
-        pending_work = 0;
-        for (i = 0; i < g_viewer_count; ++i) {
-            SDL_LockMutex(g_viewers[i]->lock);
-            if (g_viewers[i]->close_requested) {
-                SDL_UnlockMutex(g_viewers[i]->lock);
-                mem_viewer_close_window(g_viewers[i]);
-                SDL_LockMutex(g_viewers[i]->lock);
-                g_viewers[i]->close_requested = 0;
-            }
-
-            if (g_viewers[i]->open_requested) {
-                pending_work = 1;
-            }
-            if (g_viewers[i]->is_open) {
-                ++active_windows;
-            }
-            SDL_UnlockMutex(g_viewers[i]->lock);
-        }
-
-        if (g_manager_stop_requested || (g_viewer_count == 0) || (active_windows == 0 && !pending_work)) {
-            g_manager_running = 0;
-            g_manager_stop_requested = 0;
-            g_manager_thread = NULL;
-            SDL_CondBroadcast(g_manager_cond);
-            SDL_UnlockMutex(g_manager_lock);
-            SDL_DelEventWatch(mem_viewer_event_watch, NULL);
-            break;
-        }
-
-        for (i = 0; i < g_viewer_count; ++i) {
-            mem_viewer_draw(g_viewers[i]);
-        }
-        SDL_UnlockMutex(g_manager_lock);
-
-        SDL_Delay(16);
+    if (!should_join) {
+        return;
     }
 
+    if (g_backend_ready) {
+        g_main_context_invoke(NULL, mem_viewer_quit_backend, NULL);
+    }
+    pthread_join(thread, NULL);
+
+    pthread_mutex_lock(&g_backend_lock);
+    g_backend_started = 0;
+    g_backend_ready = 0;
+    g_backend_failed = 0;
+    g_backend_loop = NULL;
+    pthread_mutex_unlock(&g_backend_lock);
+}
+
+static int mem_viewer_invoke(MemViewerGtkTask task, void *userdata)
+{
+    MemViewerSyncCall call;
+
+    pthread_mutex_lock(&g_backend_lock);
+    if (!g_backend_ready || g_backend_loop == NULL) {
+        pthread_mutex_unlock(&g_backend_lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&g_backend_lock);
+
+    memset(&call, 0, sizeof(call));
+    call.task = task;
+    call.userdata = userdata;
+    pthread_mutex_init(&call.lock, NULL);
+    pthread_cond_init(&call.cond, NULL);
+
+    pthread_mutex_lock(&call.lock);
+    g_main_context_invoke(NULL, mem_viewer_sync_call_main, &call);
+    while (!call.completed) {
+        pthread_cond_wait(&call.cond, &call.lock);
+    }
+    pthread_mutex_unlock(&call.lock);
+
+    pthread_cond_destroy(&call.cond);
+    pthread_mutex_destroy(&call.lock);
+    return call.result;
+}
+
+static int mem_viewer_create_window_task(void *userdata)
+{
+    GtkWidget *box;
+    GtkWidget *controls;
+    GtkWidget *reload_button;
+    GtkWidget *apply_button;
+    MemViewer *viewer;
+
+    viewer = (MemViewer *)userdata;
+
+    viewer->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    viewer->scroller = gtk_scrolled_window_new(NULL, NULL);
+    viewer->text_view = gtk_text_view_new();
+    viewer->status_label = gtk_label_new("");
+    if (viewer->window == NULL || viewer->scroller == NULL || viewer->text_view == NULL || viewer->status_label == NULL) {
+        return -1;
+    }
+
+    gtk_window_set_title(GTK_WINDOW(viewer->window), "Memory Viewer");
+    gtk_window_set_default_size(GTK_WINDOW(viewer->window), 760, 480);
+
+    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    reload_button = gtk_button_new_with_label("Reload");
+    apply_button = gtk_button_new_with_label("Apply");
+
+    gtk_container_set_border_width(GTK_CONTAINER(box), 8);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(viewer->text_view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(viewer->text_view), GTK_WRAP_NONE);
+    gtk_container_add(GTK_CONTAINER(viewer->scroller), viewer->text_view);
+    gtk_box_pack_start(GTK_BOX(controls), reload_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(controls), apply_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), controls, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), viewer->scroller, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), viewer->status_label, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(viewer->window), box);
+
+    g_signal_connect(viewer->window, "destroy", G_CALLBACK(mem_viewer_on_window_destroy), viewer);
+    g_signal_connect(reload_button, "clicked", G_CALLBACK(mem_viewer_on_reload_clicked), viewer);
+    g_signal_connect(apply_button, "clicked", G_CALLBACK(mem_viewer_on_apply_clicked), viewer);
+
+    mem_viewer_reload_buffer(viewer);
+    gtk_widget_show_all(viewer->window);
+    return 0;
+}
+
+static int mem_viewer_reload_view_task(void *userdata)
+{
+    MemViewer *viewer;
+
+    viewer = (MemViewer *)userdata;
+    pthread_mutex_lock(&viewer->lock);
+    if (viewer->closed || viewer->window == NULL) {
+        pthread_mutex_unlock(&viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&viewer->lock);
+
+    mem_viewer_reload_buffer(viewer);
+    return 0;
+}
+
+static int mem_viewer_destroy_view_task(void *userdata)
+{
+    MemViewer *viewer;
+
+    viewer = (MemViewer *)userdata;
+    pthread_mutex_lock(&viewer->lock);
+    if (viewer->window == NULL) {
+        viewer->closed = 1;
+        pthread_mutex_unlock(&viewer->lock);
+        return 0;
+    }
+    pthread_mutex_unlock(&viewer->lock);
+
+    gtk_widget_destroy(viewer->window);
+    return 0;
+}
+
+static int mem_viewer_set_text_task(void *userdata)
+{
+    GtkTextBuffer *buffer;
+    MemViewerSetTextArgs *args;
+
+    args = (MemViewerSetTextArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->text_view == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(args->viewer->text_view));
+    gtk_text_buffer_set_text(buffer, args->text, -1);
+    mem_viewer_set_status(args->viewer, "Test edited buffer contents");
+    return 0;
+}
+
+static int mem_viewer_copy_text_task(void *userdata)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter start;
+    GtkTextIter end;
+    gchar *text;
+    MemViewerCopyTextArgs *args;
+
+    args = (MemViewerCopyTextArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->text_view == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(args->viewer->text_view));
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    args->required_size = strlen(text) + 1U;
+    if (args->buffer != NULL && args->buffer_size > 0U) {
+        g_strlcpy(args->buffer, text, args->buffer_size);
+    }
+    g_free(text);
+    return 0;
+}
+
+static int mem_viewer_apply_task(void *userdata)
+{
+    MemViewer *viewer;
+
+    viewer = (MemViewer *)userdata;
+    pthread_mutex_lock(&viewer->lock);
+    if (viewer->closed || viewer->text_view == NULL) {
+        pthread_mutex_unlock(&viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&viewer->lock);
+
+    mem_viewer_on_apply_clicked(NULL, viewer);
+    return 0;
+}
+
+static int mem_viewer_move_window_task(void *userdata)
+{
+    MemViewerMoveWindowArgs *args;
+
+    args = (MemViewerMoveWindowArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->window == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    gtk_window_move(GTK_WINDOW(args->viewer->window), args->x, args->y);
+    return 0;
+}
+
+static int mem_viewer_scroll_to_offset_task(void *userdata)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter iter;
+    MemViewerScrollArgs *args;
+    size_t line;
+
+    args = (MemViewerScrollArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->text_view == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    line = args->offset / MEM_VIEWER_BYTES_PER_ROW;
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(args->viewer->text_view));
+    gtk_text_buffer_get_iter_at_line(buffer, &iter, (gint)line);
+    gtk_text_buffer_place_cursor(buffer, &iter);
+    gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(args->viewer->text_view), &iter, 0.0, FALSE, 0.0, 0.0);
+    mem_viewer_set_status(args->viewer, "Scrolled to requested memory position");
     return 0;
 }
 
@@ -832,173 +613,125 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
 {
     MemViewer *viewer;
 
-    if (memory == NULL || size == 0) {
+    if (memory == NULL || size == 0U) {
         return NULL;
     }
 
-    if (mem_viewer_ensure_video() != 0) {
-        return NULL;
-    }
-
-    if (mem_viewer_ensure_manager_primitives() != 0) {
-        mem_viewer_release_video();
-        return NULL;
-    }
-
-    viewer = (MemViewer *)calloc(1, sizeof(*viewer));
+    viewer = (MemViewer *)calloc(1U, sizeof(*viewer));
     if (viewer == NULL) {
-        mem_viewer_release_video();
         return NULL;
     }
 
-    viewer->lock = SDL_CreateMutex();
-    viewer->cond = SDL_CreateCond();
-    if (viewer->lock == NULL || viewer->cond == NULL) {
-        mem_viewer_destroy(viewer);
-        return NULL;
-    }
-
-    viewer->memory = (const uint8_t *)memory;
+    viewer->memory = (uint8_t *)memory;
     viewer->size = size;
-    viewer->owns_video = 1;
-    viewer->open_requested = 1;
-    viewer->font_scale = 1;
-    viewer->cell_w = (MEM_VIEWER_GLYPH_W + 4) * viewer->font_scale;
-    viewer->cell_h = (MEM_VIEWER_GLYPH_H + 1) * viewer->font_scale;
-    viewer->rows_visible = 1;
+    if (pthread_mutex_init(&viewer->lock, NULL) != 0) {
+        free(viewer);
+        return NULL;
+    }
+    viewer->lock_initialized = 1;
 
-    SDL_LockMutex(g_manager_lock);
-    if (mem_viewer_register_viewer_locked(viewer) != 0 ||
-        mem_viewer_ensure_manager_thread_locked() != 0) {
-        mem_viewer_unregister_viewer_locked(viewer);
-        SDL_UnlockMutex(g_manager_lock);
+    if (mem_viewer_ensure_backend() != 0) {
         mem_viewer_destroy(viewer);
         return NULL;
     }
-    SDL_CondBroadcast(g_manager_cond);
-    SDL_UnlockMutex(g_manager_lock);
 
-    SDL_LockMutex(viewer->lock);
-    while (viewer->open_requested && !viewer->open_failed) {
-        SDL_CondWait(viewer->cond, viewer->lock);
-    }
-    if (viewer->open_failed || !viewer->is_open) {
-        SDL_UnlockMutex(viewer->lock);
+    if (mem_viewer_invoke(mem_viewer_create_window_task, viewer) != 0) {
         mem_viewer_destroy(viewer);
         return NULL;
     }
-    SDL_UnlockMutex(viewer->lock);
 
     return viewer;
 }
 
-int mem_viewer_is_open(MemViewer *viewer)
-{
-    int is_open;
-
-    if (viewer == NULL || viewer->lock == NULL) {
-        return 0;
-    }
-
-    SDL_LockMutex(viewer->lock);
-    is_open = viewer->is_open;
-    SDL_UnlockMutex(viewer->lock);
-    return is_open;
-}
-
-int mem_viewer_update_memory(MemViewer *viewer, const void *memory, size_t size)
-{
-    if (viewer == NULL || viewer->lock == NULL || memory == NULL || size == 0) {
-        return -1;
-    }
-
-    SDL_LockMutex(viewer->lock);
-    if (!viewer->is_open) {
-        SDL_UnlockMutex(viewer->lock);
-        return -1;
-    }
-    viewer->memory = (const uint8_t *)memory;
-    viewer->size = size;
-    mem_viewer_clamp_scroll(viewer);
-    SDL_UnlockMutex(viewer->lock);
-    return 0;
-}
-
 int mem_viewer_update(MemViewer *viewer)
 {
-    if (viewer == NULL || viewer->lock == NULL) {
+    if (viewer == NULL) {
         return -1;
     }
-
-    SDL_LockMutex(viewer->lock);
-    if (!viewer->is_open || viewer->memory == NULL || viewer->size == 0) {
-        SDL_UnlockMutex(viewer->lock);
-        return -1;
-    }
-    mem_viewer_clamp_scroll(viewer);
-    SDL_UnlockMutex(viewer->lock);
-    return 0;
+    return mem_viewer_invoke(mem_viewer_reload_view_task, viewer);
 }
 
 void mem_viewer_destroy(MemViewer *viewer)
 {
-    SDL_Thread *thread_to_join;
-
     if (viewer == NULL) {
         return;
     }
 
-    thread_to_join = NULL;
-    if (g_manager_lock != NULL) {
-        SDL_LockMutex(g_manager_lock);
-        if (viewer->lock != NULL) {
-            SDL_LockMutex(viewer->lock);
-            viewer->close_requested = 1;
-            SDL_UnlockMutex(viewer->lock);
+    if (viewer->lock_initialized) {
+        if (g_backend_started && g_backend_ready) {
+            mem_viewer_invoke(mem_viewer_destroy_view_task, viewer);
         }
-        SDL_CondBroadcast(g_manager_cond);
-        SDL_UnlockMutex(g_manager_lock);
-
-        if (viewer->lock != NULL) {
-            SDL_LockMutex(viewer->lock);
-            while (viewer->is_open || viewer->open_requested) {
-                SDL_CondWait(viewer->cond, viewer->lock);
-            }
-            SDL_UnlockMutex(viewer->lock);
-        }
-
-        SDL_LockMutex(g_manager_lock);
-        mem_viewer_unregister_viewer_locked(viewer);
-        if (g_viewer_count == 0 && g_manager_running) {
-            g_manager_stop_requested = 1;
-            thread_to_join = g_manager_thread;
-            SDL_CondBroadcast(g_manager_cond);
-        }
-        SDL_UnlockMutex(g_manager_lock);
+        pthread_mutex_destroy(&viewer->lock);
     }
-
-    if (thread_to_join != NULL) {
-        SDL_WaitThread(thread_to_join, NULL);
+    if (g_backend_started) {
+        mem_viewer_release_backend();
     }
-
-    if (viewer->window != NULL) {
-        mem_viewer_close_window(viewer);
-    }
-
-    if (viewer->cond != NULL) {
-        SDL_DestroyCond(viewer->cond);
-        viewer->cond = NULL;
-    }
-
-    if (viewer->lock != NULL) {
-        SDL_DestroyMutex(viewer->lock);
-        viewer->lock = NULL;
-    }
-
-    if (viewer->owns_video) {
-        mem_viewer_release_video();
-        viewer->owns_video = 0;
-    }
-
     free(viewer);
+}
+
+size_t mem_viewer_debug_copy_text(MemViewer *viewer, char *buffer, size_t buffer_size)
+{
+    MemViewerCopyTextArgs args;
+
+    if (viewer == NULL) {
+        return 0U;
+    }
+
+    memset(&args, 0, sizeof(args));
+    args.viewer = viewer;
+    args.buffer = buffer;
+    args.buffer_size = buffer_size;
+    if (mem_viewer_invoke(mem_viewer_copy_text_task, &args) != 0) {
+        return 0U;
+    }
+    return args.required_size;
+}
+
+int mem_viewer_debug_set_text(MemViewer *viewer, const char *text)
+{
+    MemViewerSetTextArgs args;
+
+    if (viewer == NULL || text == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.text = text;
+    return mem_viewer_invoke(mem_viewer_set_text_task, &args);
+}
+
+int mem_viewer_debug_apply(MemViewer *viewer)
+{
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    return mem_viewer_invoke(mem_viewer_apply_task, viewer);
+}
+
+int mem_viewer_debug_set_window_position(MemViewer *viewer, int x, int y)
+{
+    MemViewerMoveWindowArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.x = x;
+    args.y = y;
+    return mem_viewer_invoke(mem_viewer_move_window_task, &args);
+}
+
+int mem_viewer_debug_scroll_to_offset(MemViewer *viewer, size_t offset)
+{
+    MemViewerScrollArgs args;
+
+    if (viewer == NULL || offset >= viewer->size) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.offset = offset;
+    return mem_viewer_invoke(mem_viewer_scroll_to_offset_task, &args);
 }

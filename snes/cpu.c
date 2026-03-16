@@ -2246,8 +2246,6 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
     case 0xdb: { // stp imp
       cpu_idle(cpu);
       cpu_idle(cpu);
-      mem_viewer_update(cpu->copViewer);
-      mem_viewer_update(cpu->memViewer);
       fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
       break;
     }
