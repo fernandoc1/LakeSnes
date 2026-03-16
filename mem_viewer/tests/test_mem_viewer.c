@@ -10,6 +10,7 @@
 size_t mem_viewer_debug_copy_text(MemViewer *viewer, char *buffer, size_t buffer_size);
 int mem_viewer_debug_set_text(MemViewer *viewer, const char *text);
 int mem_viewer_debug_apply(MemViewer *viewer);
+int mem_viewer_debug_set_byte(MemViewer *viewer, size_t offset, uint8_t value);
 
 static int text_contains(MemViewer *viewer, const char *needle)
 {
@@ -106,6 +107,30 @@ int main(void)
 
     if (!text_contains(viewer, "00000000: AA BB 02 03")) {
         fprintf(stderr, "GTK viewer did not refresh after mem_viewer_update\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_byte(viewer, 5U, 0x7E) != 0) {
+        fprintf(stderr, "failed to update a single byte through the GTK byte editor path\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (memory[5] != 0x7E) {
+        fprintf(stderr, "single-byte edit did not update backing memory\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E")) {
+        fprintf(stderr, "GTK viewer did not refresh after a single-byte edit\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
