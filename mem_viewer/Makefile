@@ -11,18 +11,23 @@ LIB := libmem_viewer.so
 LIB_OBJS := mem_viewer.o
 TEST := test_mem_viewer
 TEST_OBJS := tests/test_mem_viewer.o
+TEST_64KB := test_64kb_updates
+TEST_64KB_OBJS := tests/test_64kb_updates.o
 MANUAL_TEST := manual_window_test
 MANUAL_TEST_OBJS := tests/manual_window_test.o
 
-.PHONY: all clean test manual-test
+.PHONY: all clean test test-64kb manual-test
 
-all: $(LIB) $(TEST) $(MANUAL_TEST)
+all: $(LIB) $(TEST) $(TEST_64KB) $(MANUAL_TEST)
 
 $(LIB): $(LIB_OBJS)
 	$(CC) -shared $(LDFLAGS) -o $@ $^ $(GTK_LIBS) $(X11_LIBS) -lpthread
 
 $(TEST): $(TEST_OBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(TEST_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
+
+$(TEST_64KB): $(TEST_64KB_OBJS) $(LIB)
+	$(CC) $(CFLAGS) -o $@ $(TEST_64KB_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
 
 $(MANUAL_TEST): $(MANUAL_TEST_OBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(MANUAL_TEST_OBJS) -L. -lmem_viewer $(GTK_LIBS) $(SDL_LIBS) $(X11_LIBS) -lpthread -Wl,-rpath,'$$ORIGIN'
@@ -33,20 +38,38 @@ mem_viewer.o: mem_viewer.c mem_viewer.h
 tests/test_mem_viewer.o: tests/test_mem_viewer.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+tests/test_64kb_updates.o: tests/test_64kb_updates.c mem_viewer.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 tests/manual_window_test.o: tests/manual_window_test.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test: $(TEST)
+	pkill -9 broadwayd 2>/dev/null; \
+	sleep 1; \
 	broadwayd :5 >/tmp/mem_viewer_broadway.log 2>&1 & pid=$$!; \
 	sleep 1; \
 	GDK_BACKEND=broadway BROADWAY_DISPLAY=:5 SDL_VIDEODRIVER=dummy ./$(TEST) --auto-exit; \
 	status=$$?; \
 	kill $$pid >/dev/null 2>&1; \
-	wait $$pid 2>/dev/null; \
+	sleep 1; \
+	pkill -9 broadwayd 2>/dev/null; \
+	exit $$status
+
+test-64kb: $(TEST_64KB)
+	pkill -9 broadwayd 2>/dev/null; \
+	sleep 2; \
+	broadwayd :7 >/tmp/mem_viewer_64kb_broadway.log 2>&1 & pid=$$!; \
+	sleep 2; \
+	GDK_BACKEND=broadway BROADWAY_DISPLAY=:7 SDL_VIDEODRIVER=dummy ./$(TEST_64KB) --auto-exit; \
+	status=$$?; \
+	kill $$pid >/dev/null 2>&1; \
+	sleep 1; \
+	pkill -9 broadwayd 2>/dev/null; \
 	exit $$status
 
 manual-test: $(MANUAL_TEST)
 	./$(MANUAL_TEST)
 
 clean:
-	rm -f $(LIB_OBJS) $(TEST_OBJS) $(MANUAL_TEST_OBJS) $(LIB) $(TEST) $(MANUAL_TEST)
+	rm -f $(LIB_OBJS) $(TEST_OBJS) $(TEST_64KB_OBJS) $(MANUAL_TEST_OBJS) $(LIB) $(TEST) $(TEST_64KB) $(MANUAL_TEST)
