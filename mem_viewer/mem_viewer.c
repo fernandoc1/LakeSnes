@@ -23,16 +23,20 @@ typedef struct {
 
 struct MemViewer {
     uint8_t *memory;
+    uint8_t *displayed_memory;
     size_t size;
     pthread_mutex_t lock;
     int lock_initialized;
     int closed;
+    int auto_refresh_enabled;
+    guint auto_refresh_source_id;
     GtkWidget *window;
     GtkWidget *scroller;
     GtkWidget *text_view;
     GtkWidget *status_label;
     GtkWidget *offset_entry;
     GtkWidget *value_entry;
+    GtkWidget *auto_refresh_toggle;
 };
 
 typedef struct {
@@ -69,6 +73,11 @@ typedef struct {
     size_t offset;
 } MemViewerGetOffsetArgs;
 
+typedef struct {
+    MemViewer *viewer;
+    int enabled;
+} MemViewerAutoRefreshArgs;
+
 static pthread_mutex_t g_backend_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_backend_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t g_backend_thread;
@@ -92,6 +101,9 @@ static int mem_viewer_scroll_to_offset_task(void *userdata);
 static int mem_viewer_set_byte_task(void *userdata);
 static int mem_viewer_select_offset_task(void *userdata);
 static int mem_viewer_get_selected_offset_task(void *userdata);
+static int mem_viewer_set_auto_refresh_task(void *userdata);
+static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scroll_to_byte);
+static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer);
 
 static void mem_viewer_init_x11_threads(void)
 {
@@ -152,6 +164,14 @@ static int mem_viewer_parse_byte_value(const char *text, uint8_t *value)
 
     *value = (uint8_t)parsed;
     return 0;
+}
+
+static void mem_viewer_format_hex8(uint8_t value, char out[2])
+{
+    static const char digits[] = "0123456789ABCDEF";
+
+    out[0] = digits[(value >> 4) & 0x0F];
+    out[1] = digits[value & 0x0F];
 }
 
 static void mem_viewer_set_status(MemViewer *viewer, const char *status)
@@ -259,49 +279,37 @@ static int mem_viewer_offset_from_click(
     );
 }
 
-static double mem_viewer_get_scroll_value(MemViewer *viewer)
+static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer)
 {
-    GtkAdjustment *adjustment;
+    GtkTextBuffer *buffer;
+    size_t i;
 
-    if (viewer->scroller == NULL) {
-        return 0.0;
-    }
-
-    adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(viewer->scroller));
-    if (adjustment == NULL) {
-        return 0.0;
-    }
-
-    return gtk_adjustment_get_value(adjustment);
-}
-
-static void mem_viewer_set_scroll_value(MemViewer *viewer, double value)
-{
-    GtkAdjustment *adjustment;
-    double upper;
-    double page_size;
-
-    if (viewer->scroller == NULL) {
+    if (viewer->text_view == NULL || viewer->displayed_memory == NULL) {
         return;
     }
 
-    adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(viewer->scroller));
-    if (adjustment == NULL) {
-        return;
-    }
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    for (i = 0U; i < viewer->size; ++i) {
+        GtkTextIter start;
+        GtkTextIter end;
+        char byte_text[2];
+        int line;
+        int line_offset;
 
-    upper = gtk_adjustment_get_upper(adjustment);
-    page_size = gtk_adjustment_get_page_size(adjustment);
-    if (value < 0.0) {
-        value = 0.0;
+        if (viewer->displayed_memory[i] == viewer->memory[i]) {
+            continue;
+        }
+
+        line = (int)(i / MEM_VIEWER_BYTES_PER_ROW);
+        line_offset = 10 + (int)((i % MEM_VIEWER_BYTES_PER_ROW) * 3U);
+        mem_viewer_format_hex8(viewer->memory[i], byte_text);
+        gtk_text_buffer_get_iter_at_line_offset(buffer, &start, line, line_offset);
+        end = start;
+        gtk_text_iter_forward_chars(&end, 2);
+        gtk_text_buffer_delete(buffer, &start, &end);
+        gtk_text_buffer_insert(buffer, &start, byte_text, 2);
+        viewer->displayed_memory[i] = viewer->memory[i];
     }
-    if (value > upper - page_size) {
-        value = upper - page_size;
-    }
-    if (value < 0.0) {
-        value = 0.0;
-    }
-    gtk_adjustment_set_value(adjustment, value);
 }
 
 static void mem_viewer_reload_buffer(MemViewer *viewer)
@@ -317,20 +325,62 @@ static void mem_viewer_reload_buffer(MemViewer *viewer)
     formatted = mem_viewer_format_memory(viewer->memory, viewer->size);
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
     gtk_text_buffer_set_text(buffer, formatted, -1);
+    if (viewer->displayed_memory != NULL) {
+        memcpy(viewer->displayed_memory, viewer->memory, viewer->size);
+    }
     snprintf(status, sizeof(status), "Viewing %zu bytes", viewer->size);
     mem_viewer_set_status(viewer, status);
     g_free(formatted);
 }
 
+static gboolean mem_viewer_auto_refresh_tick(gpointer userdata)
+{
+    MemViewer *viewer;
+    size_t offset;
+    const char *offset_text;
+
+    viewer = (MemViewer *)userdata;
+    pthread_mutex_lock(&viewer->lock);
+    if (viewer->closed || !viewer->auto_refresh_enabled || viewer->text_view == NULL) {
+        viewer->auto_refresh_source_id = 0U;
+        pthread_mutex_unlock(&viewer->lock);
+        return G_SOURCE_REMOVE;
+    }
+    pthread_mutex_unlock(&viewer->lock);
+
+    offset_text = gtk_entry_get_text(GTK_ENTRY(viewer->offset_entry));
+    if (mem_viewer_parse_size_value(offset_text, &offset) != 0) {
+        offset = 0U;
+    }
+    mem_viewer_sync_buffer_from_memory(viewer);
+    mem_viewer_select_offset(viewer, offset < viewer->size ? offset : 0U, 0);
+    return G_SOURCE_CONTINUE;
+}
+
+static void mem_viewer_set_auto_refresh_enabled(MemViewer *viewer, int enabled)
+{
+    viewer->auto_refresh_enabled = enabled != 0;
+    if (viewer->auto_refresh_enabled) {
+        if (viewer->auto_refresh_source_id == 0U) {
+            viewer->auto_refresh_source_id = g_timeout_add(100U, mem_viewer_auto_refresh_tick, viewer);
+        }
+        mem_viewer_set_status(viewer, "Auto refresh enabled");
+        return;
+    }
+
+    if (viewer->auto_refresh_source_id != 0U) {
+        g_source_remove(viewer->auto_refresh_source_id);
+        viewer->auto_refresh_source_id = 0U;
+    }
+    mem_viewer_set_status(viewer, "Auto refresh disabled");
+}
+
 static void mem_viewer_apply_single_byte(MemViewer *viewer, size_t offset, uint8_t value)
 {
     char status[128];
-    double scroll_value;
 
-    scroll_value = mem_viewer_get_scroll_value(viewer);
     viewer->memory[offset] = value;
-    mem_viewer_reload_buffer(viewer);
-    mem_viewer_set_scroll_value(viewer, scroll_value);
+    mem_viewer_sync_buffer_from_memory(viewer);
     snprintf(status, sizeof(status), "Updated byte %zu to %02X", offset, value);
     mem_viewer_set_status(viewer, status);
 }
@@ -367,6 +417,14 @@ static void mem_viewer_on_reload_clicked(GtkButton *button, gpointer userdata)
 {
     (void)button;
     mem_viewer_reload_buffer((MemViewer *)userdata);
+}
+
+static void mem_viewer_on_auto_refresh_toggled(GtkToggleButton *button, gpointer userdata)
+{
+    mem_viewer_set_auto_refresh_enabled(
+        (MemViewer *)userdata,
+        gtk_toggle_button_get_active(button)
+    );
 }
 
 static void mem_viewer_on_set_byte_clicked(GtkButton *button, gpointer userdata)
@@ -422,12 +480,18 @@ static void mem_viewer_on_window_destroy(GtkWidget *widget, gpointer userdata)
     viewer = (MemViewer *)userdata;
     pthread_mutex_lock(&viewer->lock);
     viewer->closed = 1;
+    if (viewer->auto_refresh_source_id != 0U) {
+        g_source_remove(viewer->auto_refresh_source_id);
+        viewer->auto_refresh_source_id = 0U;
+    }
+    viewer->auto_refresh_enabled = 0;
     viewer->window = NULL;
     viewer->scroller = NULL;
     viewer->text_view = NULL;
     viewer->status_label = NULL;
     viewer->offset_entry = NULL;
     viewer->value_entry = NULL;
+    viewer->auto_refresh_toggle = NULL;
     pthread_mutex_unlock(&viewer->lock);
 }
 
@@ -591,6 +655,7 @@ static int mem_viewer_create_window_task(void *userdata)
     GtkWidget *controls;
     GtkWidget *reload_button;
     GtkWidget *set_byte_button;
+    GtkWidget *auto_refresh_button;
     GtkWidget *offset_label;
     GtkWidget *value_label;
     MemViewer *viewer;
@@ -603,8 +668,10 @@ static int mem_viewer_create_window_task(void *userdata)
     viewer->status_label = gtk_label_new("");
     viewer->offset_entry = gtk_entry_new();
     viewer->value_entry = gtk_entry_new();
+    viewer->auto_refresh_toggle = gtk_toggle_button_new_with_label("Auto Refresh");
     if (viewer->window == NULL || viewer->scroller == NULL || viewer->text_view == NULL ||
-        viewer->status_label == NULL || viewer->offset_entry == NULL || viewer->value_entry == NULL) {
+        viewer->status_label == NULL || viewer->offset_entry == NULL || viewer->value_entry == NULL ||
+        viewer->auto_refresh_toggle == NULL) {
         return -1;
     }
 
@@ -615,6 +682,7 @@ static int mem_viewer_create_window_task(void *userdata)
     controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     reload_button = gtk_button_new_with_label("Reload");
     set_byte_button = gtk_button_new_with_label("Set Byte");
+    auto_refresh_button = viewer->auto_refresh_toggle;
     offset_label = gtk_label_new("Offset");
     value_label = gtk_label_new("Value");
 
@@ -635,6 +703,7 @@ static int mem_viewer_create_window_task(void *userdata)
     gtk_box_pack_start(GTK_BOX(controls), value_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), viewer->value_entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), set_byte_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(controls), auto_refresh_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), controls, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), viewer->scroller, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(box), viewer->status_label, FALSE, FALSE, 0);
@@ -643,6 +712,7 @@ static int mem_viewer_create_window_task(void *userdata)
     g_signal_connect(viewer->window, "destroy", G_CALLBACK(mem_viewer_on_window_destroy), viewer);
     g_signal_connect(reload_button, "clicked", G_CALLBACK(mem_viewer_on_reload_clicked), viewer);
     g_signal_connect(set_byte_button, "clicked", G_CALLBACK(mem_viewer_on_set_byte_clicked), viewer);
+    g_signal_connect(auto_refresh_button, "toggled", G_CALLBACK(mem_viewer_on_auto_refresh_toggled), viewer);
     g_signal_connect(viewer->text_view, "button-press-event", G_CALLBACK(mem_viewer_on_text_view_button_press), viewer);
 
     mem_viewer_reload_buffer(viewer);
@@ -804,6 +874,22 @@ static int mem_viewer_get_selected_offset_task(void *userdata)
     return 0;
 }
 
+static int mem_viewer_set_auto_refresh_task(void *userdata)
+{
+    MemViewerAutoRefreshArgs *args;
+
+    args = (MemViewerAutoRefreshArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->auto_refresh_toggle == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(args->viewer->auto_refresh_toggle), args->enabled != 0);
+    return 0;
+}
+
 MemViewer *mem_viewer_open(const void *memory, size_t size)
 {
     MemViewer *viewer;
@@ -819,7 +905,13 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
 
     viewer->memory = (uint8_t *)memory;
     viewer->size = size;
+    viewer->displayed_memory = (uint8_t *)malloc(size);
+    if (viewer->displayed_memory == NULL) {
+        free(viewer);
+        return NULL;
+    }
     if (pthread_mutex_init(&viewer->lock, NULL) != 0) {
+        free(viewer->displayed_memory);
         free(viewer);
         return NULL;
     }
@@ -861,6 +953,7 @@ void mem_viewer_destroy(MemViewer *viewer)
     if (g_backend_started) {
         mem_viewer_release_backend();
     }
+    free(viewer->displayed_memory);
     free(viewer);
 }
 
@@ -921,6 +1014,19 @@ int mem_viewer_debug_set_byte(MemViewer *viewer, size_t offset, uint8_t value)
     args.offset = offset;
     args.value = value;
     return mem_viewer_invoke(mem_viewer_set_byte_task, &args);
+}
+
+int mem_viewer_debug_set_auto_refresh(MemViewer *viewer, int enabled)
+{
+    MemViewerAutoRefreshArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.enabled = enabled;
+    return mem_viewer_invoke(mem_viewer_set_auto_refresh_task, &args);
 }
 
 int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset)

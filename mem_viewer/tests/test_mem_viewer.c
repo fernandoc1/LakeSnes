@@ -11,6 +11,7 @@ size_t mem_viewer_debug_copy_text(MemViewer *viewer, char *buffer, size_t buffer
 int mem_viewer_debug_set_byte(MemViewer *viewer, size_t offset, uint8_t value);
 int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset);
 size_t mem_viewer_debug_get_selected_offset(MemViewer *viewer);
+int mem_viewer_debug_set_auto_refresh(MemViewer *viewer, int enabled);
 
 static int text_contains(MemViewer *viewer, const char *needle)
 {
@@ -154,6 +155,33 @@ int main(void)
 
     if (mem_viewer_debug_get_selected_offset(viewer) != 18U) {
         fprintf(stderr, "selecting a byte did not update the offset entry\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_auto_refresh(viewer, 1) != 0) {
+        fprintf(stderr, "failed to enable auto refresh\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    memory[6] = 0x9C;
+    SDL_Delay(250);
+
+    if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E 9C")) {
+        fprintf(stderr, "GTK viewer did not refresh automatically after memory changed\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_auto_refresh(viewer, 0) != 0) {
+        fprintf(stderr, "failed to disable auto refresh\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
