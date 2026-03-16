@@ -10,6 +10,8 @@
 #define MEM_VIEWER_GLYPH_W 5
 #define MEM_VIEWER_GLYPH_H 7
 #define MEM_VIEWER_ADDRESS_DIGITS 8
+#define MEM_VIEWER_SCROLLBAR_W 12
+#define MEM_VIEWER_SCROLLBAR_MIN_THUMB_H 24
 
 struct MemViewer {
     const uint8_t *memory;
@@ -24,6 +26,8 @@ struct MemViewer {
     int open_requested;
     int open_failed;
     int close_requested;
+    int dragging_scrollbar;
+    int scrollbar_drag_offset;
     int window_width;
     int window_height;
     int rows_visible;
@@ -59,6 +63,10 @@ static int mem_viewer_prepare_window(MemViewer *viewer);
 static void mem_viewer_close_window(MemViewer *viewer);
 static void mem_viewer_refresh_layout(MemViewer *viewer);
 static void mem_viewer_draw(MemViewer *viewer);
+static int mem_viewer_scrollbar_track_h(const MemViewer *viewer);
+static int mem_viewer_scrollbar_thumb_h(const MemViewer *viewer);
+static int mem_viewer_scrollbar_thumb_y(const MemViewer *viewer);
+static void mem_viewer_scroll_to_thumb_y(MemViewer *viewer, int thumb_y);
 
 static const Glyph g_glyphs[] = {
     { '0', { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E } },
@@ -342,6 +350,92 @@ static void mem_viewer_refresh_layout(MemViewer *viewer)
     mem_viewer_clamp_scroll(viewer);
 }
 
+static int mem_viewer_scrollbar_track_h(const MemViewer *viewer)
+{
+    return viewer->window_height - (MEM_VIEWER_PADDING * 2);
+}
+
+static int mem_viewer_scrollbar_thumb_h(const MemViewer *viewer)
+{
+    int track_h;
+    size_t total_rows;
+    int thumb_h;
+
+    track_h = mem_viewer_scrollbar_track_h(viewer);
+    total_rows = mem_viewer_total_rows(viewer);
+    if (track_h <= 0 || total_rows == 0 || total_rows <= (size_t)viewer->rows_visible) {
+        return track_h;
+    }
+
+    thumb_h = (int)((track_h * (size_t)viewer->rows_visible) / total_rows);
+    if (thumb_h < MEM_VIEWER_SCROLLBAR_MIN_THUMB_H) {
+        thumb_h = MEM_VIEWER_SCROLLBAR_MIN_THUMB_H;
+    }
+    if (thumb_h > track_h) {
+        thumb_h = track_h;
+    }
+    return thumb_h;
+}
+
+static int mem_viewer_scrollbar_thumb_y(const MemViewer *viewer)
+{
+    int track_h;
+    int thumb_h;
+    size_t total_rows;
+    size_t max_first_row;
+    int travel;
+
+    track_h = mem_viewer_scrollbar_track_h(viewer);
+    thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
+    total_rows = mem_viewer_total_rows(viewer);
+    if (track_h <= 0 || total_rows <= (size_t)viewer->rows_visible) {
+        return MEM_VIEWER_PADDING;
+    }
+
+    max_first_row = total_rows - (size_t)viewer->rows_visible;
+    travel = track_h - thumb_h;
+    if (travel <= 0 || max_first_row == 0) {
+        return MEM_VIEWER_PADDING;
+    }
+
+    return MEM_VIEWER_PADDING + (int)((viewer->first_row * (size_t)travel) / max_first_row);
+}
+
+static void mem_viewer_scroll_to_thumb_y(MemViewer *viewer, int thumb_y)
+{
+    int track_h;
+    int thumb_h;
+    int min_y;
+    int max_y;
+    size_t total_rows;
+    size_t max_first_row;
+
+    track_h = mem_viewer_scrollbar_track_h(viewer);
+    thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
+    total_rows = mem_viewer_total_rows(viewer);
+    if (track_h <= 0 || total_rows <= (size_t)viewer->rows_visible) {
+        viewer->first_row = 0;
+        return;
+    }
+
+    min_y = MEM_VIEWER_PADDING;
+    max_y = MEM_VIEWER_PADDING + track_h - thumb_h;
+    if (thumb_y < min_y) {
+        thumb_y = min_y;
+    }
+    if (thumb_y > max_y) {
+        thumb_y = max_y;
+    }
+
+    max_first_row = total_rows - (size_t)viewer->rows_visible;
+    if (max_y == min_y || max_first_row == 0) {
+        viewer->first_row = 0;
+        return;
+    }
+
+    viewer->first_row = ((size_t)(thumb_y - min_y) * max_first_row) / (size_t)(max_y - min_y);
+}
+
 static int mem_viewer_prepare_window(MemViewer *viewer)
 {
     SDL_LockMutex(viewer->lock);
@@ -445,6 +539,8 @@ static void mem_viewer_draw(MemViewer *viewer)
 {
     uint32_t bg;
     uint32_t fg;
+    uint32_t scrollbar_bg;
+    uint32_t scrollbar_fg;
     int row;
     size_t row_index;
     int y;
@@ -459,6 +555,8 @@ static void mem_viewer_draw(MemViewer *viewer)
 
     bg = SDL_MapRGB(surface->format, 10, 12, 16);
     fg = SDL_MapRGB(surface->format, 120, 255, 160);
+    scrollbar_bg = SDL_MapRGB(surface->format, 26, 30, 36);
+    scrollbar_fg = SDL_MapRGB(surface->format, 90, 130, 110);
 
     SDL_LockSurface(surface);
     SDL_FillRect(surface, NULL, bg);
@@ -501,6 +599,23 @@ static void mem_viewer_draw(MemViewer *viewer)
             mem_viewer_draw_text(surface, viewer, x, y, byte_text, fg);
             x += mem_viewer_total_cell_w(viewer) * 2;
         }
+    }
+
+    if (mem_viewer_total_rows(viewer) > (size_t)viewer->rows_visible) {
+        int scrollbar_x;
+        int track_y;
+        int track_h;
+        int thumb_y;
+        int thumb_h;
+
+        scrollbar_x = viewer->window_width - MEM_VIEWER_PADDING - MEM_VIEWER_SCROLLBAR_W;
+        track_y = MEM_VIEWER_PADDING;
+        track_h = mem_viewer_scrollbar_track_h(viewer);
+        thumb_y = mem_viewer_scrollbar_thumb_y(viewer);
+        thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
+
+        mem_viewer_fill_rect(surface, scrollbar_x, track_y, MEM_VIEWER_SCROLLBAR_W, track_h, scrollbar_bg);
+        mem_viewer_fill_rect(surface, scrollbar_x, thumb_y, MEM_VIEWER_SCROLLBAR_W, thumb_h, scrollbar_fg);
     }
 
     SDL_UnlockSurface(surface);
@@ -550,6 +665,46 @@ static void mem_viewer_handle_event(MemViewer *viewer, const SDL_Event *event)
 
     if (event->type == SDL_MOUSEWHEEL) {
         mem_viewer_scroll(viewer, -event->wheel.y);
+        SDL_UnlockMutex(viewer->lock);
+        return;
+    }
+
+    if (event->type == SDL_MOUSEBUTTONDOWN && event->button.button == SDL_BUTTON_LEFT) {
+        if (mem_viewer_total_rows(viewer) > (size_t)viewer->rows_visible) {
+            int scrollbar_x;
+            int thumb_y;
+            int thumb_h;
+
+            scrollbar_x = viewer->window_width - MEM_VIEWER_PADDING - MEM_VIEWER_SCROLLBAR_W;
+            thumb_y = mem_viewer_scrollbar_thumb_y(viewer);
+            thumb_h = mem_viewer_scrollbar_thumb_h(viewer);
+            if (event->button.x >= scrollbar_x &&
+                event->button.x < scrollbar_x + MEM_VIEWER_SCROLLBAR_W &&
+                event->button.y >= MEM_VIEWER_PADDING &&
+                event->button.y < MEM_VIEWER_PADDING + mem_viewer_scrollbar_track_h(viewer)) {
+                viewer->dragging_scrollbar = 1;
+                if (event->button.y >= thumb_y && event->button.y < thumb_y + thumb_h) {
+                    viewer->scrollbar_drag_offset = event->button.y - thumb_y;
+                } else {
+                    viewer->scrollbar_drag_offset = thumb_h / 2;
+                    mem_viewer_scroll_to_thumb_y(viewer, event->button.y - viewer->scrollbar_drag_offset);
+                }
+            }
+        }
+        SDL_UnlockMutex(viewer->lock);
+        return;
+    }
+
+    if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT) {
+        viewer->dragging_scrollbar = 0;
+        SDL_UnlockMutex(viewer->lock);
+        return;
+    }
+
+    if (event->type == SDL_MOUSEMOTION) {
+        if (viewer->dragging_scrollbar) {
+            mem_viewer_scroll_to_thumb_y(viewer, event->motion.y - viewer->scrollbar_drag_offset);
+        }
         SDL_UnlockMutex(viewer->lock);
         return;
     }
@@ -614,6 +769,15 @@ static int mem_viewer_manager_main(void *userdata)
             switch (event.type) {
             case SDL_WINDOWEVENT:
                 window_id = event.window.windowID;
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                window_id = event.button.windowID;
+                break;
+            case SDL_MOUSEBUTTONUP:
+                window_id = event.button.windowID;
+                break;
+            case SDL_MOUSEMOTION:
+                window_id = event.motion.windowID;
                 break;
             case SDL_MOUSEWHEEL:
                 window_id = event.wheel.windowID;
@@ -710,7 +874,7 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
     viewer->size = size;
     viewer->owns_video = 1;
     viewer->open_requested = 1;
-    viewer->font_scale = 2;
+    viewer->font_scale = 1;
     viewer->cell_w = (MEM_VIEWER_GLYPH_W + 4) * viewer->font_scale;
     viewer->cell_h = (MEM_VIEWER_GLYPH_H + 1) * viewer->font_scale;
     viewer->rows_visible = 1;
