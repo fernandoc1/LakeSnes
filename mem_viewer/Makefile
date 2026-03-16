@@ -4,7 +4,7 @@ LDFLAGS :=
 SDL_LIBS := $(shell pkg-config --libs sdl2)
 
 LIB_NAME := libmem_viewer.so
-LIB_OBJS := src/mem_viewer.o
+LIB_OBJS := mem_viewer.o
 APP := test_mem_viewer
 APP_OBJS := examples/test_app.o
 
@@ -18,10 +18,10 @@ $(LIB_NAME): $(LIB_OBJS)
 $(APP): $(APP_OBJS) $(LIB_NAME)
 	$(CC) $(CFLAGS) -o $@ $(APP_OBJS) -L. -lmem_viewer $(SDL_LIBS) -Wl,-rpath,'$$ORIGIN'
 
-src/%.o: src/%.c include/mem_viewer.h
+%.o: %.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-examples/%.o: examples/%.c include/mem_viewer.h
+examples/%.o: examples/%.c mem_viewer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 run: $(APP)
