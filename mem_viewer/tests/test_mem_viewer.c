@@ -11,6 +11,8 @@ size_t mem_viewer_debug_copy_text(MemViewer *viewer, char *buffer, size_t buffer
 int mem_viewer_debug_set_text(MemViewer *viewer, const char *text);
 int mem_viewer_debug_apply(MemViewer *viewer);
 int mem_viewer_debug_set_byte(MemViewer *viewer, size_t offset, uint8_t value);
+int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset);
+size_t mem_viewer_debug_get_selected_offset(MemViewer *viewer);
 
 static int text_contains(MemViewer *viewer, const char *needle)
 {
@@ -94,6 +96,14 @@ int main(void)
         return 1;
     }
 
+    if (mem_viewer_debug_get_selected_offset(viewer) != 0U) {
+        fprintf(stderr, "GTK viewer did not initialize the offset selector to byte zero\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
     memory[0] = 0xAA;
     memory[1] = 0xBB;
     memory[31] = 0xCC;
@@ -131,6 +141,22 @@ int main(void)
 
     if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E")) {
         fprintf(stderr, "GTK viewer did not refresh after a single-byte edit\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_select_offset(viewer, 18U) != 0) {
+        fprintf(stderr, "failed to select a byte offset through the GTK selection path\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_selected_offset(viewer) != 18U) {
+        fprintf(stderr, "selecting a byte did not update the offset entry\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
