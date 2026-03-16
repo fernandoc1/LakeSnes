@@ -24,7 +24,9 @@ typedef struct {
 struct MemViewer {
     uint8_t *memory;
     uint8_t *displayed_memory;
+    uint8_t *changed_lines;
     size_t size;
+    size_t line_count;
     pthread_mutex_t lock;
     int lock_initialized;
     int closed;
@@ -37,6 +39,17 @@ struct MemViewer {
     GtkWidget *offset_entry;
     GtkWidget *value_entry;
     GtkWidget *auto_refresh_toggle;
+    GtkWidget *search_entry;
+    GtkWidget *search_decimal_toggle;
+    GtkWidget *search_prev_button;
+    GtkWidget *search_next_button;
+    GtkWidget *changed_only_toggle;
+    GtkTextTag *search_match_tag;
+    GtkTextTag *search_current_tag;
+    GtkTextTag *hidden_line_tag;
+    size_t *search_matches;
+    size_t search_match_count;
+    size_t search_match_index;
 };
 
 typedef struct {
@@ -78,6 +91,27 @@ typedef struct {
     int enabled;
 } MemViewerAutoRefreshArgs;
 
+typedef struct {
+    MemViewer *viewer;
+    const char *text;
+    int decimal_mode;
+} MemViewerSearchArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    int direction;
+} MemViewerSearchStepArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    int enabled;
+} MemViewerChangedOnlyArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    int visible_line_count;
+} MemViewerVisibleLinesArgs;
+
 static pthread_mutex_t g_backend_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_backend_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t g_backend_thread;
@@ -102,8 +136,14 @@ static int mem_viewer_set_byte_task(void *userdata);
 static int mem_viewer_select_offset_task(void *userdata);
 static int mem_viewer_get_selected_offset_task(void *userdata);
 static int mem_viewer_set_auto_refresh_task(void *userdata);
+static int mem_viewer_set_search_task(void *userdata);
+static int mem_viewer_step_search_task(void *userdata);
+static int mem_viewer_set_changed_only_task(void *userdata);
+static int mem_viewer_get_visible_lines_task(void *userdata);
 static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scroll_to_byte);
 static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer);
+static void mem_viewer_refresh_search(MemViewer *viewer, int scroll_to_current);
+static void mem_viewer_apply_changed_line_filter(MemViewer *viewer);
 
 static void mem_viewer_init_x11_threads(void)
 {
@@ -166,6 +206,20 @@ static int mem_viewer_parse_byte_value(const char *text, uint8_t *value)
     return 0;
 }
 
+static int mem_viewer_parse_search_value(const char *text, int decimal_mode, uint8_t *value)
+{
+    char *end;
+    unsigned long parsed;
+
+    parsed = strtoul(text, &end, decimal_mode ? 10 : 16);
+    if (text == end || *end != '\0' || parsed > 0xFFU) {
+        return -1;
+    }
+
+    *value = (uint8_t)parsed;
+    return 0;
+}
+
 static void mem_viewer_format_hex8(uint8_t value, char out[2])
 {
     static const char digits[] = "0123456789ABCDEF";
@@ -177,6 +231,124 @@ static void mem_viewer_format_hex8(uint8_t value, char out[2])
 static void mem_viewer_set_status(MemViewer *viewer, const char *status)
 {
     gtk_label_set_text(GTK_LABEL(viewer->status_label), status);
+}
+
+static void mem_viewer_clear_search_matches(MemViewer *viewer)
+{
+    free(viewer->search_matches);
+    viewer->search_matches = NULL;
+    viewer->search_match_count = 0U;
+    viewer->search_match_index = 0U;
+}
+
+static void mem_viewer_remove_search_tags(MemViewer *viewer)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter start;
+    GtkTextIter end;
+
+    if (viewer->text_view == NULL || viewer->search_match_tag == NULL || viewer->search_current_tag == NULL) {
+        return;
+    }
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    gtk_text_buffer_remove_tag(buffer, viewer->search_match_tag, &start, &end);
+    gtk_text_buffer_remove_tag(buffer, viewer->search_current_tag, &start, &end);
+}
+
+static void mem_viewer_apply_search_tags(MemViewer *viewer)
+{
+    GtkTextBuffer *buffer;
+    size_t i;
+
+    if (viewer->text_view == NULL || viewer->search_match_tag == NULL || viewer->search_current_tag == NULL) {
+        return;
+    }
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    mem_viewer_remove_search_tags(viewer);
+
+    for (i = 0U; i < viewer->search_match_count; ++i) {
+        GtkTextIter start;
+        GtkTextIter end;
+        int line;
+        int line_offset;
+
+        line = (int)(viewer->search_matches[i] / MEM_VIEWER_BYTES_PER_ROW);
+        line_offset = 10 + (int)((viewer->search_matches[i] % MEM_VIEWER_BYTES_PER_ROW) * 3U);
+        gtk_text_buffer_get_iter_at_line_offset(buffer, &start, line, line_offset);
+        end = start;
+        gtk_text_iter_forward_chars(&end, 2);
+        gtk_text_buffer_apply_tag(buffer, viewer->search_match_tag, &start, &end);
+        if (i == viewer->search_match_index) {
+            gtk_text_buffer_apply_tag(buffer, viewer->search_current_tag, &start, &end);
+        }
+    }
+}
+
+static void mem_viewer_mark_all_lines_changed(MemViewer *viewer)
+{
+    if (viewer->changed_lines == NULL) {
+        return;
+    }
+
+    memset(viewer->changed_lines, 1, viewer->line_count);
+}
+
+static void mem_viewer_mark_changed_lines(MemViewer *viewer)
+{
+    size_t i;
+
+    if (viewer->changed_lines == NULL) {
+        return;
+    }
+
+    memset(viewer->changed_lines, 0, viewer->line_count);
+    for (i = 0U; i < viewer->size; ++i) {
+        if (viewer->displayed_memory[i] != viewer->memory[i]) {
+            viewer->changed_lines[i / MEM_VIEWER_BYTES_PER_ROW] = 1;
+        }
+    }
+}
+
+static void mem_viewer_apply_changed_line_filter(MemViewer *viewer)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter start;
+    GtkTextIter end;
+    size_t line;
+
+    if (viewer->text_view == NULL || viewer->hidden_line_tag == NULL) {
+        return;
+    }
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view));
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    gtk_text_buffer_remove_tag(buffer, viewer->hidden_line_tag, &start, &end);
+
+    if (!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(viewer->changed_only_toggle))) {
+        return;
+    }
+
+    for (line = 0U; line < viewer->line_count; ++line) {
+        GtkTextIter line_start;
+        GtkTextIter line_end;
+
+        if (viewer->changed_lines[line]) {
+            continue;
+        }
+
+        gtk_text_buffer_get_iter_at_line(buffer, &line_start, (gint)line);
+        line_end = line_start;
+        if (!gtk_text_iter_ends_line(&line_end)) {
+            gtk_text_iter_forward_to_line_end(&line_end);
+        }
+        if (!gtk_text_iter_is_end(&line_end)) {
+            gtk_text_iter_forward_char(&line_end);
+        }
+        gtk_text_buffer_apply_tag(buffer, viewer->hidden_line_tag, &line_start, &line_end);
+    }
 }
 
 static int mem_viewer_row_byte_count(const MemViewer *viewer, int line)
@@ -310,6 +482,8 @@ static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer)
         gtk_text_buffer_insert(buffer, &start, byte_text, 2);
         viewer->displayed_memory[i] = viewer->memory[i];
     }
+    mem_viewer_apply_changed_line_filter(viewer);
+    mem_viewer_apply_search_tags(viewer);
 }
 
 static void mem_viewer_reload_buffer(MemViewer *viewer)
@@ -328,9 +502,73 @@ static void mem_viewer_reload_buffer(MemViewer *viewer)
     if (viewer->displayed_memory != NULL) {
         memcpy(viewer->displayed_memory, viewer->memory, viewer->size);
     }
+    mem_viewer_mark_all_lines_changed(viewer);
     snprintf(status, sizeof(status), "Viewing %zu bytes", viewer->size);
     mem_viewer_set_status(viewer, status);
+    mem_viewer_apply_changed_line_filter(viewer);
+    mem_viewer_apply_search_tags(viewer);
     g_free(formatted);
+}
+
+static void mem_viewer_refresh_search(MemViewer *viewer, int scroll_to_current)
+{
+    const char *text;
+    uint8_t value;
+    size_t i;
+    size_t match_count;
+    size_t *matches;
+    int decimal_mode;
+    char status[128];
+
+    text = gtk_entry_get_text(GTK_ENTRY(viewer->search_entry));
+    decimal_mode = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(viewer->search_decimal_toggle));
+    mem_viewer_clear_search_matches(viewer);
+    mem_viewer_remove_search_tags(viewer);
+
+    if (text == NULL || *text == '\0') {
+        mem_viewer_set_status(viewer, "Search cleared");
+        return;
+    }
+
+    if (mem_viewer_parse_search_value(text, decimal_mode, &value) != 0) {
+        mem_viewer_set_status(viewer, decimal_mode ? "Invalid decimal search value" : "Invalid hexadecimal search value");
+        return;
+    }
+
+    match_count = 0U;
+    for (i = 0U; i < viewer->size; ++i) {
+        if (viewer->memory[i] == value) {
+            match_count += 1U;
+        }
+    }
+
+    if (match_count == 0U) {
+        mem_viewer_set_status(viewer, "No matches found");
+        return;
+    }
+
+    matches = (size_t *)malloc(match_count * sizeof(*matches));
+    if (matches == NULL) {
+        mem_viewer_set_status(viewer, "Search allocation failed");
+        return;
+    }
+
+    match_count = 0U;
+    for (i = 0U; i < viewer->size; ++i) {
+        if (viewer->memory[i] == value) {
+            matches[match_count++] = i;
+        }
+    }
+
+    viewer->search_matches = matches;
+    viewer->search_match_count = match_count;
+    viewer->search_match_index = 0U;
+    mem_viewer_apply_search_tags(viewer);
+    if (scroll_to_current) {
+        mem_viewer_select_offset(viewer, viewer->search_matches[0], 1);
+    }
+    snprintf(status, sizeof(status), "Found %zu matches", viewer->search_match_count);
+    mem_viewer_set_status(viewer, status);
 }
 
 static gboolean mem_viewer_auto_refresh_tick(gpointer userdata)
@@ -352,6 +590,7 @@ static gboolean mem_viewer_auto_refresh_tick(gpointer userdata)
     if (mem_viewer_parse_size_value(offset_text, &offset) != 0) {
         offset = 0U;
     }
+    mem_viewer_mark_changed_lines(viewer);
     mem_viewer_sync_buffer_from_memory(viewer);
     mem_viewer_select_offset(viewer, offset < viewer->size ? offset : 0U, 0);
     return G_SOURCE_CONTINUE;
@@ -380,6 +619,7 @@ static void mem_viewer_apply_single_byte(MemViewer *viewer, size_t offset, uint8
     char status[128];
 
     viewer->memory[offset] = value;
+    mem_viewer_mark_changed_lines(viewer);
     mem_viewer_sync_buffer_from_memory(viewer);
     snprintf(status, sizeof(status), "Updated byte %zu to %02X", offset, value);
     mem_viewer_set_status(viewer, status);
@@ -416,7 +656,8 @@ static void mem_viewer_select_offset(MemViewer *viewer, size_t offset, int scrol
 static void mem_viewer_on_reload_clicked(GtkButton *button, gpointer userdata)
 {
     (void)button;
-    mem_viewer_reload_buffer((MemViewer *)userdata);
+    mem_viewer_mark_changed_lines((MemViewer *)userdata);
+    mem_viewer_sync_buffer_from_memory((MemViewer *)userdata);
 }
 
 static void mem_viewer_on_auto_refresh_toggled(GtkToggleButton *button, gpointer userdata)
@@ -425,6 +666,69 @@ static void mem_viewer_on_auto_refresh_toggled(GtkToggleButton *button, gpointer
         (MemViewer *)userdata,
         gtk_toggle_button_get_active(button)
     );
+}
+
+static void mem_viewer_on_search_changed(GtkEditable *editable, gpointer userdata)
+{
+    (void)editable;
+    mem_viewer_refresh_search((MemViewer *)userdata, 0);
+}
+
+static void mem_viewer_on_search_mode_toggled(GtkToggleButton *button, gpointer userdata)
+{
+    (void)button;
+    mem_viewer_refresh_search((MemViewer *)userdata, 0);
+}
+
+static void mem_viewer_on_changed_only_toggled(GtkToggleButton *button, gpointer userdata)
+{
+    MemViewer *viewer;
+
+    (void)button;
+    viewer = (MemViewer *)userdata;
+    mem_viewer_apply_changed_line_filter(viewer);
+    mem_viewer_apply_search_tags(viewer);
+}
+
+static void mem_viewer_step_search(MemViewer *viewer, int direction)
+{
+    char status[128];
+
+    if (viewer->search_match_count == 0U) {
+        mem_viewer_set_status(viewer, "No search matches");
+        return;
+    }
+
+    if (direction > 0) {
+        viewer->search_match_index = (viewer->search_match_index + 1U) % viewer->search_match_count;
+    } else if (viewer->search_match_index == 0U) {
+        viewer->search_match_index = viewer->search_match_count - 1U;
+    } else {
+        viewer->search_match_index -= 1U;
+    }
+
+    mem_viewer_apply_search_tags(viewer);
+    mem_viewer_select_offset(viewer, viewer->search_matches[viewer->search_match_index], 1);
+    snprintf(
+        status,
+        sizeof(status),
+        "Match %zu of %zu",
+        viewer->search_match_index + 1U,
+        viewer->search_match_count
+    );
+    mem_viewer_set_status(viewer, status);
+}
+
+static void mem_viewer_on_search_next_clicked(GtkButton *button, gpointer userdata)
+{
+    (void)button;
+    mem_viewer_step_search((MemViewer *)userdata, 1);
+}
+
+static void mem_viewer_on_search_prev_clicked(GtkButton *button, gpointer userdata)
+{
+    (void)button;
+    mem_viewer_step_search((MemViewer *)userdata, -1);
 }
 
 static void mem_viewer_on_set_byte_clicked(GtkButton *button, gpointer userdata)
@@ -492,6 +796,15 @@ static void mem_viewer_on_window_destroy(GtkWidget *widget, gpointer userdata)
     viewer->offset_entry = NULL;
     viewer->value_entry = NULL;
     viewer->auto_refresh_toggle = NULL;
+    viewer->search_entry = NULL;
+    viewer->search_decimal_toggle = NULL;
+    viewer->search_prev_button = NULL;
+    viewer->search_next_button = NULL;
+    viewer->changed_only_toggle = NULL;
+    viewer->search_match_tag = NULL;
+    viewer->search_current_tag = NULL;
+    viewer->hidden_line_tag = NULL;
+    mem_viewer_clear_search_matches(viewer);
     pthread_mutex_unlock(&viewer->lock);
 }
 
@@ -651,13 +964,17 @@ static int mem_viewer_invoke(MemViewerGtkTask task, void *userdata)
 
 static int mem_viewer_create_window_task(void *userdata)
 {
-    GtkWidget *box;
+    GtkWidget *root_box;
+    GtkWidget *left_box;
+    GtkWidget *search_box;
     GtkWidget *controls;
     GtkWidget *reload_button;
     GtkWidget *set_byte_button;
     GtkWidget *auto_refresh_button;
     GtkWidget *offset_label;
     GtkWidget *value_label;
+    GtkWidget *search_label;
+    GtkWidget *changed_only_button;
     MemViewer *viewer;
 
     viewer = (MemViewer *)userdata;
@@ -669,24 +986,54 @@ static int mem_viewer_create_window_task(void *userdata)
     viewer->offset_entry = gtk_entry_new();
     viewer->value_entry = gtk_entry_new();
     viewer->auto_refresh_toggle = gtk_toggle_button_new_with_label("Auto Refresh");
+    viewer->search_entry = gtk_entry_new();
+    viewer->search_decimal_toggle = gtk_check_button_new_with_label("Decimal");
+    viewer->search_prev_button = gtk_button_new_with_label("Previous");
+    viewer->search_next_button = gtk_button_new_with_label("Next");
+    viewer->changed_only_toggle = gtk_check_button_new_with_label("Changed Lines Only");
     if (viewer->window == NULL || viewer->scroller == NULL || viewer->text_view == NULL ||
         viewer->status_label == NULL || viewer->offset_entry == NULL || viewer->value_entry == NULL ||
-        viewer->auto_refresh_toggle == NULL) {
+        viewer->auto_refresh_toggle == NULL || viewer->search_entry == NULL ||
+        viewer->search_decimal_toggle == NULL || viewer->search_prev_button == NULL ||
+        viewer->search_next_button == NULL || viewer->changed_only_toggle == NULL) {
         return -1;
     }
 
     gtk_window_set_title(GTK_WINDOW(viewer->window), "Memory Viewer");
     gtk_window_set_default_size(GTK_WINDOW(viewer->window), 760, 480);
 
-    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    root_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    left_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    search_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     reload_button = gtk_button_new_with_label("Reload");
     set_byte_button = gtk_button_new_with_label("Set Byte");
     auto_refresh_button = viewer->auto_refresh_toggle;
     offset_label = gtk_label_new("Offset");
     value_label = gtk_label_new("Value");
+    search_label = gtk_label_new("Search Value");
+    viewer->search_match_tag = gtk_text_buffer_create_tag(
+        gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view)),
+        NULL,
+        "background", "#FFF0A8",
+        NULL
+    );
+    viewer->search_current_tag = gtk_text_buffer_create_tag(
+        gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view)),
+        NULL,
+        "background", "#FFB347",
+        "weight", PANGO_WEIGHT_BOLD,
+        NULL
+    );
+    viewer->hidden_line_tag = gtk_text_buffer_create_tag(
+        gtk_text_view_get_buffer(GTK_TEXT_VIEW(viewer->text_view)),
+        NULL,
+        "invisible", TRUE,
+        NULL
+    );
+    changed_only_button = viewer->changed_only_toggle;
 
-    gtk_container_set_border_width(GTK_CONTAINER(box), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(root_box), 8);
     gtk_text_view_set_monospace(GTK_TEXT_VIEW(viewer->text_view), TRUE);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(viewer->text_view), GTK_WRAP_NONE);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(viewer->text_view), FALSE);
@@ -704,15 +1051,28 @@ static int mem_viewer_create_window_task(void *userdata)
     gtk_box_pack_start(GTK_BOX(controls), viewer->value_entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), set_byte_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), auto_refresh_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), controls, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), viewer->scroller, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(box), viewer->status_label, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(viewer->window), box);
+    gtk_box_pack_start(GTK_BOX(left_box), controls, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(left_box), viewer->scroller, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(left_box), viewer->status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), search_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), viewer->search_entry, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), viewer->search_decimal_toggle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), viewer->search_prev_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), viewer->search_next_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(search_box), changed_only_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root_box), left_box, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(root_box), search_box, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(viewer->window), root_box);
 
     g_signal_connect(viewer->window, "destroy", G_CALLBACK(mem_viewer_on_window_destroy), viewer);
     g_signal_connect(reload_button, "clicked", G_CALLBACK(mem_viewer_on_reload_clicked), viewer);
     g_signal_connect(set_byte_button, "clicked", G_CALLBACK(mem_viewer_on_set_byte_clicked), viewer);
     g_signal_connect(auto_refresh_button, "toggled", G_CALLBACK(mem_viewer_on_auto_refresh_toggled), viewer);
+    g_signal_connect(viewer->search_entry, "changed", G_CALLBACK(mem_viewer_on_search_changed), viewer);
+    g_signal_connect(viewer->search_decimal_toggle, "toggled", G_CALLBACK(mem_viewer_on_search_mode_toggled), viewer);
+    g_signal_connect(viewer->search_prev_button, "clicked", G_CALLBACK(mem_viewer_on_search_prev_clicked), viewer);
+    g_signal_connect(viewer->search_next_button, "clicked", G_CALLBACK(mem_viewer_on_search_next_clicked), viewer);
+    g_signal_connect(changed_only_button, "toggled", G_CALLBACK(mem_viewer_on_changed_only_toggled), viewer);
     g_signal_connect(viewer->text_view, "button-press-event", G_CALLBACK(mem_viewer_on_text_view_button_press), viewer);
 
     mem_viewer_reload_buffer(viewer);
@@ -733,7 +1093,8 @@ static int mem_viewer_reload_view_task(void *userdata)
     }
     pthread_mutex_unlock(&viewer->lock);
 
-    mem_viewer_reload_buffer(viewer);
+    mem_viewer_mark_changed_lines(viewer);
+    mem_viewer_sync_buffer_from_memory(viewer);
     return 0;
 }
 
@@ -890,6 +1251,83 @@ static int mem_viewer_set_auto_refresh_task(void *userdata)
     return 0;
 }
 
+static int mem_viewer_set_search_task(void *userdata)
+{
+    MemViewerSearchArgs *args;
+
+    args = (MemViewerSearchArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->search_entry == NULL || args->viewer->search_decimal_toggle == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(args->viewer->search_decimal_toggle), args->decimal_mode != 0);
+    gtk_entry_set_text(GTK_ENTRY(args->viewer->search_entry), args->text);
+    mem_viewer_refresh_search(args->viewer, 1);
+    return 0;
+}
+
+static int mem_viewer_step_search_task(void *userdata)
+{
+    MemViewerSearchStepArgs *args;
+
+    args = (MemViewerSearchStepArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    mem_viewer_step_search(args->viewer, args->direction);
+    return 0;
+}
+
+static int mem_viewer_set_changed_only_task(void *userdata)
+{
+    MemViewerChangedOnlyArgs *args;
+
+    args = (MemViewerChangedOnlyArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->changed_only_toggle == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(args->viewer->changed_only_toggle), args->enabled != 0);
+    return 0;
+}
+
+static int mem_viewer_get_visible_lines_task(void *userdata)
+{
+    GtkTextBuffer *buffer;
+    GtkTextIter iter;
+    MemViewerVisibleLinesArgs *args;
+    size_t line;
+
+    args = (MemViewerVisibleLinesArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed || args->viewer->text_view == NULL) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(args->viewer->text_view));
+    args->visible_line_count = 0;
+    for (line = 0U; line < args->viewer->line_count; ++line) {
+        gtk_text_buffer_get_iter_at_line(buffer, &iter, (gint)line);
+        if (!gtk_text_iter_has_tag(&iter, args->viewer->hidden_line_tag)) {
+            args->visible_line_count += 1;
+        }
+    }
+
+    return 0;
+}
+
 MemViewer *mem_viewer_open(const void *memory, size_t size)
 {
     MemViewer *viewer;
@@ -905,13 +1343,17 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
 
     viewer->memory = (uint8_t *)memory;
     viewer->size = size;
+    viewer->line_count = (size + MEM_VIEWER_BYTES_PER_ROW - 1U) / MEM_VIEWER_BYTES_PER_ROW;
     viewer->displayed_memory = (uint8_t *)malloc(size);
-    if (viewer->displayed_memory == NULL) {
+    viewer->changed_lines = (uint8_t *)calloc(viewer->line_count == 0U ? 1U : viewer->line_count, 1U);
+    if (viewer->displayed_memory == NULL || viewer->changed_lines == NULL) {
+        free(viewer->changed_lines);
         free(viewer);
         return NULL;
     }
     if (pthread_mutex_init(&viewer->lock, NULL) != 0) {
         free(viewer->displayed_memory);
+        free(viewer->changed_lines);
         free(viewer);
         return NULL;
     }
@@ -953,6 +1395,8 @@ void mem_viewer_destroy(MemViewer *viewer)
     if (g_backend_started) {
         mem_viewer_release_backend();
     }
+    mem_viewer_clear_search_matches(viewer);
+    free(viewer->changed_lines);
     free(viewer->displayed_memory);
     free(viewer);
 }
@@ -1027,6 +1471,75 @@ int mem_viewer_debug_set_auto_refresh(MemViewer *viewer, int enabled)
     args.viewer = viewer;
     args.enabled = enabled;
     return mem_viewer_invoke(mem_viewer_set_auto_refresh_task, &args);
+}
+
+int mem_viewer_debug_set_search(MemViewer *viewer, const char *text, int decimal_mode)
+{
+    MemViewerSearchArgs args;
+
+    if (viewer == NULL || text == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.text = text;
+    args.decimal_mode = decimal_mode;
+    return mem_viewer_invoke(mem_viewer_set_search_task, &args);
+}
+
+int mem_viewer_debug_search_next(MemViewer *viewer)
+{
+    MemViewerSearchStepArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.direction = 1;
+    return mem_viewer_invoke(mem_viewer_step_search_task, &args);
+}
+
+int mem_viewer_debug_search_previous(MemViewer *viewer)
+{
+    MemViewerSearchStepArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.direction = -1;
+    return mem_viewer_invoke(mem_viewer_step_search_task, &args);
+}
+
+int mem_viewer_debug_set_changed_only(MemViewer *viewer, int enabled)
+{
+    MemViewerChangedOnlyArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.enabled = enabled;
+    return mem_viewer_invoke(mem_viewer_set_changed_only_task, &args);
+}
+
+int mem_viewer_debug_get_visible_line_count(MemViewer *viewer)
+{
+    MemViewerVisibleLinesArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.visible_line_count = -1;
+    if (mem_viewer_invoke(mem_viewer_get_visible_lines_task, &args) != 0) {
+        return -1;
+    }
+    return args.visible_line_count;
 }
 
 int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset)

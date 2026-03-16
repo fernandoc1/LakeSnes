@@ -12,6 +12,11 @@ int mem_viewer_debug_set_byte(MemViewer *viewer, size_t offset, uint8_t value);
 int mem_viewer_debug_select_offset(MemViewer *viewer, size_t offset);
 size_t mem_viewer_debug_get_selected_offset(MemViewer *viewer);
 int mem_viewer_debug_set_auto_refresh(MemViewer *viewer, int enabled);
+int mem_viewer_debug_set_search(MemViewer *viewer, const char *text, int decimal_mode);
+int mem_viewer_debug_search_next(MemViewer *viewer);
+int mem_viewer_debug_search_previous(MemViewer *viewer);
+int mem_viewer_debug_set_changed_only(MemViewer *viewer, int enabled);
+int mem_viewer_debug_get_visible_line_count(MemViewer *viewer);
 
 static int text_contains(MemViewer *viewer, const char *needle)
 {
@@ -139,6 +144,87 @@ int main(void)
 
     if (!text_contains(viewer, "00000000: AA BB 02 03 04 7E")) {
         fprintf(stderr, "GTK viewer did not refresh after a single-byte edit\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_changed_only(viewer, 1) != 0) {
+        fprintf(stderr, "failed to enable changed-lines-only filter\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_visible_line_count(viewer) != 1) {
+        fprintf(stderr, "changed-lines-only filter did not reduce the view to one changed line\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_changed_only(viewer, 0) != 0) {
+        fprintf(stderr, "failed to disable changed-lines-only filter\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    memory[20] = 0x7E;
+    if (mem_viewer_update(viewer) != 0) {
+        fprintf(stderr, "mem_viewer_update failed after creating a second search match\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_search(viewer, "7E", 0) != 0) {
+        fprintf(stderr, "failed to set hex search value\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_selected_offset(viewer) != 5U) {
+        fprintf(stderr, "hex search did not select the first matching byte\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_search_next(viewer) != 0 || mem_viewer_debug_get_selected_offset(viewer) != 20U) {
+        fprintf(stderr, "search next did not advance to the second match\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_search_previous(viewer) != 0 || mem_viewer_debug_get_selected_offset(viewer) != 5U) {
+        fprintf(stderr, "search previous did not return to the first match\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_set_search(viewer, "126", 1) != 0) {
+        fprintf(stderr, "failed to set decimal search value\n");
+        mem_viewer_destroy(viewer);
+        SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+        return 1;
+    }
+
+    if (mem_viewer_debug_get_selected_offset(viewer) != 5U) {
+        fprintf(stderr, "decimal search did not select the expected match\n");
         mem_viewer_destroy(viewer);
         SDL_DestroyWindow(sdl_window);
         SDL_Quit();
