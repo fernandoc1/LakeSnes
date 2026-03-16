@@ -20,6 +20,10 @@ int mem_viewer_debug_get_visible_line_count(MemViewer *viewer);
 int mem_viewer_debug_get_change_fade(MemViewer *viewer, size_t offset);
 int mem_viewer_debug_is_closed(MemViewer *viewer);
 int mem_viewer_debug_scroll_to_offset(MemViewer *viewer, size_t offset);
+int mem_viewer_debug_get_visible_line_range(MemViewer *viewer, size_t *first_line, size_t *last_line);
+int mem_viewer_debug_get_line_dirty(MemViewer *viewer, size_t line);
+int mem_viewer_debug_get_line_pending(MemViewer *viewer, size_t line);
+void mem_viewer_debug_invalidate_line(MemViewer *viewer, size_t line);
 
 static void pump_sdl_events(void);
 static void print_viewer_text(FILE *stream, MemViewer *viewer);
@@ -65,11 +69,18 @@ static void fill_large_memory(uint8_t *memory, size_t size)
 static int run_large_buffer_visibility_test(SDL_Window *sdl_window)
 {
     enum { memory_size = 128 * 1024 };
+    enum { bytes_per_row = 16 };
     uint8_t *memory;
     MemViewer *viewer;
     size_t visible_offset;
     size_t offscreen_offset;
+    size_t visible_line;
+    size_t offscreen_line;
+    size_t first_visible_line;
+    size_t last_visible_line;
     char expected_line[96];
+    int line_dirty;
+    int line_pending;
 
     memory = (uint8_t *)malloc(memory_size);
     if (memory == NULL) {
@@ -88,8 +99,31 @@ static int run_large_buffer_visibility_test(SDL_Window *sdl_window)
     visible_offset = 0x0005U;
     offscreen_offset = 0x1FF25U;
 
+    visible_line = visible_offset / bytes_per_row;
+    offscreen_line = offscreen_offset / bytes_per_row;
+
+    if (mem_viewer_debug_get_visible_line_range(viewer, &first_visible_line, &last_visible_line) != 0) {
+        fprintf(stderr, "failed to get visible line range\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    if (visible_line < first_visible_line || visible_line > last_visible_line) {
+        fprintf(stderr, "visible_offset line %zu not in computed visible range [%zu, %zu]\n",
+                visible_line, first_visible_line, last_visible_line);
+    }
+
+    if (offscreen_line < first_visible_line || offscreen_line > last_visible_line) {
+        fprintf(stderr, "offscreen_offset line %zu outside expected visible range [%zu, %zu] - this is expected for top-aligned view\n",
+                offscreen_line, first_visible_line, last_visible_line);
+    }
+
     memory[visible_offset] = 0x5AU;
+    mem_viewer_debug_invalidate_line(viewer, visible_line);
     memory[offscreen_offset] = 0xA5U;
+    mem_viewer_debug_invalidate_line(viewer, offscreen_line);
+
     if (mem_viewer_update(viewer) != 0) {
         fprintf(stderr, "mem_viewer_update failed for large buffer\n");
         mem_viewer_destroy(viewer);
@@ -112,8 +146,32 @@ static int run_large_buffer_visibility_test(SDL_Window *sdl_window)
         return 1;
     }
 
+    line_dirty = mem_viewer_debug_get_line_dirty(viewer, visible_line);
+    if (line_dirty != 0 && line_dirty != -1) {
+        fprintf(stderr, "visible line %zu still marked as dirty after update (got %d)\n", visible_line, line_dirty);
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    line_pending = mem_viewer_debug_get_line_pending(viewer, visible_line);
+    if (line_pending != 0 && line_pending != -1) {
+        fprintf(stderr, "visible line %zu still marked as pending after update (got %d)\n", visible_line, line_pending);
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
     if (mem_viewer_debug_get_change_fade(viewer, offscreen_offset) != 255) {
         fprintf(stderr, "offscreen large-buffer byte was highlighted before becoming visible\n");
+        mem_viewer_destroy(viewer);
+        free(memory);
+        return 1;
+    }
+
+    line_dirty = mem_viewer_debug_get_line_dirty(viewer, offscreen_line);
+    if (line_dirty == 0) {
+        fprintf(stderr, "offscreen line %zu should remain dirty (got %d)\n", offscreen_line, line_dirty);
         mem_viewer_destroy(viewer);
         free(memory);
         return 1;

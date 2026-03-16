@@ -26,6 +26,8 @@ struct MemViewer {
     uint8_t *displayed_memory;
     uint8_t *changed_lines;
     uint8_t *change_fade;
+    uint8_t *line_dirty;
+    uint8_t *line_pending;
     size_t size;
     size_t line_count;
     pthread_mutex_t lock;
@@ -52,6 +54,9 @@ struct MemViewer {
     size_t *search_matches;
     size_t search_match_count;
     size_t search_match_index;
+    size_t first_visible_line;
+    size_t last_visible_line;
+    int visible_range_valid;
 };
 
 typedef struct {
@@ -125,6 +130,24 @@ typedef struct {
     int is_closed;
 } MemViewerClosedArgs;
 
+typedef struct {
+    MemViewer *viewer;
+    size_t *first_line;
+    size_t *last_line;
+} MemViewerDebugVisibleRangeArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    size_t line;
+    int is_dirty;
+} MemViewerDebugLineDirtyArgs;
+
+typedef struct {
+    MemViewer *viewer;
+    size_t line;
+    int is_pending;
+} MemViewerDebugLinePendingArgs;
+
 static pthread_mutex_t g_backend_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_backend_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t g_backend_thread;
@@ -165,6 +188,11 @@ static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer);
 static void mem_viewer_refresh_search(MemViewer *viewer, int scroll_to_current);
 static void mem_viewer_apply_changed_line_filter(MemViewer *viewer);
 static GtkTextTag *mem_viewer_get_change_tag(MemViewer *viewer, uint8_t fade);
+static void mem_viewer_invalidate_line(MemViewer *viewer, size_t line);
+static void mem_viewer_compute_visible_range(MemViewer *viewer);
+static void mem_viewer_sync_pending_lines(MemViewer *viewer);
+static int mem_viewer_get_line_dirty(MemViewer *viewer, size_t line);
+static int mem_viewer_get_line_pending(MemViewer *viewer, size_t line);
 
 static void mem_viewer_init_x11_threads(void)
 {
@@ -338,6 +366,9 @@ static void mem_viewer_mark_all_lines_changed(MemViewer *viewer)
     }
 
     memset(viewer->changed_lines, 1, viewer->line_count);
+    if (viewer->line_dirty != NULL) {
+        memset(viewer->line_dirty, 1, viewer->line_count);
+    }
 }
 
 static void mem_viewer_apply_changed_line_filter(MemViewer *viewer)
@@ -501,44 +532,61 @@ static void mem_viewer_mark_changed_lines(MemViewer *viewer)
             viewer->memory + base,
             row_bytes
         ) != 0;
+        if (viewer->line_dirty != NULL && viewer->changed_lines[line]) {
+            viewer->line_dirty[line] = 1;
+        }
     }
 }
 
 static int mem_viewer_get_visible_line_range(MemViewer *viewer, size_t *first_line, size_t *last_line)
 {
-    GtkTextIter start_iter;
-    GtkTextIter end_iter;
-    GdkRectangle visible_rect;
-    int start_line;
-    int end_line;
+    GtkAdjustment *adjustment;
+    double value;
+    double upper;
+    double page_size;
+    double line_height;
+    size_t visible_lines;
+    size_t start_line;
 
     if (viewer->text_view == NULL || viewer->line_count == 0U || !gtk_widget_get_realized(viewer->text_view)) {
         return -1;
     }
 
-    gtk_text_view_get_visible_rect(GTK_TEXT_VIEW(viewer->text_view), &visible_rect);
-    gtk_text_view_get_line_at_y(GTK_TEXT_VIEW(viewer->text_view), &start_iter, visible_rect.y, NULL);
-    gtk_text_view_get_line_at_y(
-        GTK_TEXT_VIEW(viewer->text_view),
-        &end_iter,
-        visible_rect.y + MAX(visible_rect.height - 1, 0),
-        NULL
-    );
-
-    start_line = gtk_text_iter_get_line(&start_iter);
-    end_line = gtk_text_iter_get_line(&end_iter);
-    if (start_line < 0) {
-        start_line = 0;
-    }
-    if (end_line < start_line) {
-        end_line = start_line;
-    }
-    if ((size_t)end_line >= viewer->line_count) {
-        end_line = (int)(viewer->line_count - 1U);
+    adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(viewer->scroller));
+    if (adjustment == NULL) {
+        return -1;
     }
 
-    *first_line = (size_t)start_line;
-    *last_line = (size_t)end_line;
+    value = gtk_adjustment_get_value(adjustment);
+    upper = gtk_adjustment_get_upper(adjustment);
+    page_size = gtk_adjustment_get_page_size(adjustment);
+
+    if (page_size <= 0.0 || upper <= 0.0) {
+        line_height = (double)mem_viewer_estimate_visible_line_count(viewer);
+        if (line_height <= 0.0) {
+            line_height = 32.0;
+        }
+        visible_lines = (size_t)(page_size / line_height) + 2U;
+        start_line = 0U;
+    } else {
+        line_height = upper / (double)viewer->line_count;
+        if (line_height <= 0.0) {
+            line_height = 1.0;
+        }
+        visible_lines = (size_t)(page_size / line_height) + 2U;
+        start_line = (size_t)(value / line_height);
+    }
+
+    if (start_line >= viewer->line_count) {
+        start_line = viewer->line_count - 1U;
+    }
+
+    *first_line = start_line;
+    *last_line = start_line + visible_lines;
+    if (*last_line >= viewer->line_count) {
+        *last_line = viewer->line_count - 1U;
+    }
+
     return 0;
 }
 
@@ -603,6 +651,82 @@ static void mem_viewer_sync_around_line(MemViewer *viewer, size_t center_line)
     mem_viewer_apply_search_tags(viewer);
 }
 
+static void mem_viewer_invalidate_line(MemViewer *viewer, size_t line)
+{
+    if (line >= viewer->line_count) {
+        return;
+    }
+    if (viewer->line_dirty != NULL) {
+        viewer->line_dirty[line] = 1;
+    }
+    if (viewer->changed_lines != NULL) {
+        viewer->changed_lines[line] = 1;
+    }
+}
+
+static void mem_viewer_compute_visible_range(MemViewer *viewer)
+{
+    size_t first_line;
+    size_t last_line;
+
+    if (mem_viewer_get_visible_line_range(viewer, &first_line, &last_line) == 0) {
+        viewer->first_visible_line = first_line;
+        viewer->last_visible_line = last_line;
+        viewer->visible_range_valid = 1;
+    } else {
+        viewer->first_visible_line = 0U;
+        viewer->last_visible_line = viewer->line_count > 0U ? viewer->line_count - 1U : 0U;
+        viewer->visible_range_valid = 0;
+    }
+}
+
+static int mem_viewer_get_line_dirty(MemViewer *viewer, size_t line)
+{
+    if (line >= viewer->line_count || viewer->line_dirty == NULL) {
+        return 0;
+    }
+    return viewer->line_dirty[line] != 0;
+}
+
+static int mem_viewer_get_line_pending(MemViewer *viewer, size_t line)
+{
+    if (line >= viewer->line_count || viewer->line_pending == NULL) {
+        return 0;
+    }
+    return viewer->line_pending[line] != 0;
+}
+
+static void mem_viewer_sync_pending_lines(MemViewer *viewer)
+{
+    size_t first_line;
+    size_t last_line;
+    size_t line;
+
+    if (!viewer->visible_range_valid) {
+        mem_viewer_compute_visible_range(viewer);
+    }
+
+    first_line = viewer->first_visible_line;
+    last_line = viewer->last_visible_line;
+
+    if (first_line > last_line || viewer->line_dirty == NULL || viewer->line_pending == NULL) {
+        return;
+    }
+
+    for (line = first_line; line <= last_line; ++line) {
+        if (viewer->line_dirty[line]) {
+            viewer->line_pending[line] = 1;
+        }
+    }
+
+    mem_viewer_sync_visible_lines(viewer, first_line, last_line);
+
+    for (line = first_line; line <= last_line; ++line) {
+        viewer->line_dirty[line] = 0U;
+        viewer->line_pending[line] = 0U;
+    }
+}
+
 static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, size_t last_line)
 {
     GtkTextBuffer *buffer;
@@ -617,6 +741,7 @@ static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, 
         size_t base;
         size_t row_bytes;
         size_t i;
+        int line_is_dirty;
 
         base = line * MEM_VIEWER_BYTES_PER_ROW;
         if (base >= viewer->size) {
@@ -627,6 +752,8 @@ static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, 
         if (row_bytes > MEM_VIEWER_BYTES_PER_ROW) {
             row_bytes = MEM_VIEWER_BYTES_PER_ROW;
         }
+
+        line_is_dirty = (viewer->line_pending != NULL && viewer->line_pending[line]);
 
         for (i = 0U; i < row_bytes; ++i) {
             size_t offset;
@@ -641,18 +768,20 @@ static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, 
 
             offset = base + i;
             line_offset = 10 + (int)(i * 3U);
-            gtk_text_buffer_get_iter_at_line_offset(buffer, &start, (gint)line, line_offset);
-            end = start;
-            gtk_text_iter_forward_chars(&end, 2);
 
             old_fade = viewer->change_fade[offset];
             new_fade = old_fade;
             old_tag = mem_viewer_get_change_tag(viewer, old_fade);
-            if (old_tag != NULL) {
-                gtk_text_buffer_remove_tag(buffer, old_tag, &start, &end);
-            }
 
-            if (viewer->displayed_memory[offset] != viewer->memory[offset]) {
+            if (line_is_dirty && viewer->displayed_memory[offset] != viewer->memory[offset]) {
+                gtk_text_buffer_get_iter_at_line_offset(buffer, &start, (gint)line, line_offset);
+                end = start;
+                gtk_text_iter_forward_chars(&end, 2);
+
+                if (old_tag != NULL) {
+                    gtk_text_buffer_remove_tag(buffer, old_tag, &start, &end);
+                }
+
                 mem_viewer_format_hex8(viewer->memory[offset], byte_text);
                 gtk_text_buffer_delete(buffer, &start, &end);
                 gtk_text_buffer_insert(buffer, &start, byte_text, 2);
@@ -664,7 +793,7 @@ static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, 
 
             viewer->change_fade[offset] = new_fade;
             new_tag = mem_viewer_get_change_tag(viewer, new_fade);
-            if (new_tag != NULL) {
+            if (new_tag != NULL && line_is_dirty) {
                 gtk_text_buffer_get_iter_at_line_offset(buffer, &start, (gint)line, line_offset);
                 end = start;
                 gtk_text_iter_forward_chars(&end, 2);
@@ -676,19 +805,13 @@ static void mem_viewer_sync_visible_lines(MemViewer *viewer, size_t first_line, 
 
 static void mem_viewer_sync_buffer_from_memory(MemViewer *viewer)
 {
-    size_t first_line;
-    size_t last_line;
-
     if (viewer->text_view == NULL || viewer->displayed_memory == NULL) {
         return;
     }
 
     mem_viewer_mark_changed_lines(viewer);
-    if (mem_viewer_get_visible_line_range(viewer, &first_line, &last_line) == 0) {
-        mem_viewer_sync_visible_lines(viewer, first_line, last_line);
-    } else {
-        mem_viewer_sync_visible_lines(viewer, 0U, viewer->line_count == 0U ? 0U : viewer->line_count - 1U);
-    }
+    mem_viewer_compute_visible_range(viewer);
+    mem_viewer_sync_pending_lines(viewer);
     mem_viewer_apply_changed_line_filter(viewer);
     mem_viewer_apply_search_tags(viewer);
 }
@@ -713,6 +836,11 @@ static void mem_viewer_reload_buffer(MemViewer *viewer)
         memset(viewer->change_fade, 255, viewer->size);
     }
     mem_viewer_mark_all_lines_changed(viewer);
+    if (viewer->line_pending != NULL) {
+        memset(viewer->line_pending, 0, viewer->line_count);
+    }
+    viewer->visible_range_valid = 0;
+    mem_viewer_compute_visible_range(viewer);
     snprintf(status, sizeof(status), "Viewing %zu bytes", viewer->size);
     mem_viewer_set_status(viewer, status);
     mem_viewer_apply_changed_line_filter(viewer);
@@ -907,7 +1035,9 @@ static void mem_viewer_on_scroll_value_changed(GtkAdjustment *adjustment, gpoint
     if (viewer->closed || viewer->text_view == NULL) {
         return;
     }
-    mem_viewer_sync_buffer_from_memory(viewer);
+    viewer->visible_range_valid = 0;
+    mem_viewer_compute_visible_range(viewer);
+    mem_viewer_sync_pending_lines(viewer);
 }
 
 static void mem_viewer_step_search(MemViewer *viewer, int direction)
@@ -1589,6 +1719,57 @@ static int mem_viewer_is_closed_task(void *userdata)
     return 0;
 }
 
+static int mem_viewer_debug_get_visible_range_task(void *userdata)
+{
+    MemViewerDebugVisibleRangeArgs *args;
+
+    args = (MemViewerDebugVisibleRangeArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    if (args->viewer->visible_range_valid) {
+        *args->first_line = args->viewer->first_visible_line;
+        *args->last_line = args->viewer->last_visible_line;
+    } else {
+        *args->first_line = 0U;
+        *args->last_line = args->viewer->line_count > 0U ? args->viewer->line_count - 1U : 0U;
+    }
+    pthread_mutex_unlock(&args->viewer->lock);
+    return 0;
+}
+
+static int mem_viewer_debug_get_line_dirty_task(void *userdata)
+{
+    MemViewerDebugLineDirtyArgs *args;
+
+    args = (MemViewerDebugLineDirtyArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    args->is_dirty = mem_viewer_get_line_dirty(args->viewer, args->line);
+    pthread_mutex_unlock(&args->viewer->lock);
+    return 0;
+}
+
+static int mem_viewer_debug_get_line_pending_task(void *userdata)
+{
+    MemViewerDebugLinePendingArgs *args;
+
+    args = (MemViewerDebugLinePendingArgs *)userdata;
+    pthread_mutex_lock(&args->viewer->lock);
+    if (args->viewer->closed) {
+        pthread_mutex_unlock(&args->viewer->lock);
+        return -1;
+    }
+    args->is_pending = mem_viewer_get_line_pending(args->viewer, args->line);
+    pthread_mutex_unlock(&args->viewer->lock);
+    return 0;
+}
+
 MemViewer *mem_viewer_open(const void *memory, size_t size)
 {
     MemViewer *viewer;
@@ -1608,9 +1789,18 @@ MemViewer *mem_viewer_open(const void *memory, size_t size)
     viewer->displayed_memory = (uint8_t *)malloc(size);
     viewer->changed_lines = (uint8_t *)calloc(viewer->line_count == 0U ? 1U : viewer->line_count, 1U);
     viewer->change_fade = (uint8_t *)malloc(size);
-    if (viewer->displayed_memory == NULL || viewer->changed_lines == NULL || viewer->change_fade == NULL) {
+    viewer->line_dirty = (uint8_t *)calloc(viewer->line_count == 0U ? 1U : viewer->line_count, 1U);
+    viewer->line_pending = (uint8_t *)calloc(viewer->line_count == 0U ? 1U : viewer->line_count, 1U);
+    viewer->first_visible_line = 0U;
+    viewer->last_visible_line = viewer->line_count > 0U ? viewer->line_count - 1U : 0U;
+    viewer->visible_range_valid = 0;
+    if (viewer->displayed_memory == NULL || viewer->changed_lines == NULL || viewer->change_fade == NULL ||
+        viewer->line_dirty == NULL || viewer->line_pending == NULL) {
+        free(viewer->line_pending);
+        free(viewer->line_dirty);
         free(viewer->change_fade);
         free(viewer->changed_lines);
+        free(viewer->displayed_memory);
         free(viewer);
         return NULL;
     }
@@ -1660,6 +1850,8 @@ void mem_viewer_destroy(MemViewer *viewer)
         mem_viewer_release_backend();
     }
     mem_viewer_clear_search_matches(viewer);
+    free(viewer->line_pending);
+    free(viewer->line_dirty);
     free(viewer->change_fade);
     free(viewer->changed_lines);
     free(viewer->displayed_memory);
@@ -1868,4 +2060,68 @@ size_t mem_viewer_debug_get_selected_offset(MemViewer *viewer)
     }
 
     return args.offset;
+}
+
+int mem_viewer_debug_get_visible_line_range(MemViewer *viewer, size_t *first_line, size_t *last_line)
+{
+    MemViewerDebugVisibleRangeArgs args;
+
+    if (viewer == NULL || first_line == NULL || last_line == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.first_line = first_line;
+    args.last_line = last_line;
+    *first_line = 0U;
+    *last_line = 0U;
+    if (mem_viewer_invoke(mem_viewer_debug_get_visible_range_task, &args) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int mem_viewer_debug_get_line_dirty(MemViewer *viewer, size_t line)
+{
+    MemViewerDebugLineDirtyArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.line = line;
+    args.is_dirty = -1;
+    if (mem_viewer_invoke(mem_viewer_debug_get_line_dirty_task, &args) != 0) {
+        return -1;
+    }
+    return args.is_dirty;
+}
+
+int mem_viewer_debug_get_line_pending(MemViewer *viewer, size_t line)
+{
+    MemViewerDebugLinePendingArgs args;
+
+    if (viewer == NULL) {
+        return -1;
+    }
+
+    args.viewer = viewer;
+    args.line = line;
+    args.is_pending = -1;
+    if (mem_viewer_invoke(mem_viewer_debug_get_line_pending_task, &args) != 0) {
+        return -1;
+    }
+    return args.is_pending;
+}
+
+void mem_viewer_debug_invalidate_line(MemViewer *viewer, size_t line)
+{
+    if (viewer == NULL || line >= viewer->line_count) {
+        return;
+    }
+    pthread_mutex_lock(&viewer->lock);
+    mem_viewer_invalidate_line(viewer, line);
+    pthread_mutex_unlock(&viewer->lock);
 }
