@@ -10,6 +10,8 @@ LakeSnes.app
 dump.bin
 # sdl2 directory
 sdl2
+# Memviewer
+mem_viewer/test_mem_viewer
 # Build results/libraries
 *.o
 *.a

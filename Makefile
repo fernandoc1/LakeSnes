@@ -2,47 +2,32 @@
 CC = g++
 CFLAGS = -g -I ./snes -I ./zip
 
-WINDRES = windres
-
 execname = lakesnes
-sdlflags = `sdl2-config --cflags --libs`
+sdlcflags = `sdl2-config --cflags`
+sdlldflags = `sdl2-config --libs`
 
-appname = LakeSnes.app
-appexecname = lakesnes_app
-appsdlflags = -framework SDL2 -F sdl2 -rpath @executable_path/../Frameworks
-
-winexecname = lakesnes.exe
-
+# Source files
 cfiles = snes/spc.c snes/dsp.c snes/apu.c snes/cpu.c snes/dma.c snes/ppu.c snes/cart.c snes/input.c snes/statehandler.c snes/snes.c snes/snes_other.c \
  zip/zip.c tracing.c main.c
 hfiles = snes/spc.h snes/dsp.h snes/apu.h snes/cpu.h snes/dma.h snes/ppu.h snes/cart.h snes/input.h snes/statehandler.h snes/snes.h \
  zip/zip.h zip/miniz.h tracing.h
 
+# Object files
+ofiles = $(cfiles:.c=.o)
+
 .PHONY: all clean
 
-all: $(execname)
+all: libs $(execname)
 
-$(execname): $(cfiles) $(hfiles)
-	$(CC) $(CFLAGS) -o $@ $(cfiles) $(sdlflags)
+libs:
+	make -C mem_viewer
+	mv mem_viewer/libmem_viewer.so ./
 
-$(appexecname): $(cfiles) $(hfiles)
-	$(CC) $(CFLAGS) -o $@ $(cfiles) $(appsdlflags) -D SDL2SUBDIR
+%.o: %.c $(hfiles)
+	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
 
-$(appname): $(appexecname)
-	rm -rf $(appname)
-	mkdir -p $(appname)/Contents/MacOS
-	mkdir -p $(appname)/Contents/Frameworks
-	mkdir -p $(appname)/Contents/Resources
-	cp -R sdl2/SDL2.framework $(appname)/Contents/Frameworks/
-	cp $(appexecname) $(appname)/Contents/MacOS/$(appexecname)
-	cp resources/appicon.icns $(appname)/Contents/Resources/
-	cp resources/PkgInfo $(appname)/Contents/
-	cp resources/Info.plist $(appname)/Contents/
-
-$(winexecname): $(cfiles) $(hfiles)
-	$(WINDRES) resources/win.rc -O coff -o win.res
-	$(CC) $(CFLAGS) -o $@ $(cfiles) win.res $(sdlflags)
+$(execname): $(ofiles)
+	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) -L. -lmem_viewer -Wl,-rpath,'$$ORIGIN'
 
 clean:
-	rm -f $(execname) $(appexecname) $(winexecname) win.res
-	rm -rf $(appname)
+	rm -f $(execname) $(ofiles)
