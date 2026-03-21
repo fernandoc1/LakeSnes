@@ -1,0 +1,3 @@
+[submodule "libmemviewer"]
+	path = libmemviewer
+	url = https://github.com/fernandoc1/libmemviewer

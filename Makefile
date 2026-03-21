@@ -1,6 +1,6 @@
 
 CC = g++
-CFLAGS = -g -I ./snes -I ./zip -I ./mem_viewer
+CFLAGS = -g -I ./snes -I ./zip -I ./libmemviewer
 
 execname = lakesnes
 sdlcflags = `sdl2-config --cflags`
@@ -20,8 +20,8 @@ ofiles = $(cfiles:.c=.o)
 all: libs $(execname)
 
 libs:
-	make -C mem_viewer
-	mv mem_viewer/libmem_viewer.so ./
+	make -C libmemviewer
+	mv libmemviewer/libmemviewer.so ./
 
 %.o: %.c $(hfiles)
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
@@ -30,5 +30,5 @@ $(execname): $(ofiles)
 	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) -L. -lmem_viewer -Wl,-rpath,'$$ORIGIN'
 
 clean:
-	make -C mem_viewer clean
+	make -C libmemviewer clean
 	rm -f $(execname) $(ofiles)
