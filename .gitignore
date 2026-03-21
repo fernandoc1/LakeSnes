@@ -11,8 +11,7 @@ dump.bin
 # sdl2 directory
 sdl2
 # Memviewer
-mem_viewer/test_mem_viewer
-mem_viewer/manual_window_test
+mem_viewer_helper
 # Build results/libraries
 *.o
 *.a
