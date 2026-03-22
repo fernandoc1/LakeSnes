@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <iostream>
+
 #include "statehandler.h"
 
 #include "mem_viewer.h"
@@ -14,6 +16,49 @@ typedef void (*CpuWriteHandler)(void* mem, uint32_t adr, uint8_t val);
 typedef void (*CpuIdleHandler)(void* mem, bool waiting);
 
 typedef struct Cpu Cpu;
+
+struct ProgramCounter {
+private:
+    uint16_t value;
+public:
+    ProgramCounter(uint16_t v = 0) : value(v) {}
+    ProgramCounter& operator=(uint16_t v) {
+        value = v;
+        return *this;
+    }
+
+    operator uint16_t() const {
+        return value;
+    }
+
+    ProgramCounter& operator++() {
+        ++value;
+        return *this;
+    }
+
+    ProgramCounter operator++(int) {
+        ProgramCounter tmp = *this;
+        ++value;
+        return tmp;
+    }
+
+    ProgramCounter& operator--() {
+        --value;
+        return *this;
+    }
+
+    ProgramCounter& operator+=(uint16_t v) {
+        value += v;
+        return *this;
+    }
+
+    ProgramCounter& operator-=(uint16_t v) {
+        value -= v;
+        return *this;
+    }
+    
+    uint16_t raw() const { return value; }
+};
 
 struct Cpu {
   // reference to memory handler, pointers to read/write/idle handlers
@@ -26,7 +71,7 @@ struct Cpu {
   uint16_t x;
   uint16_t y;
   uint16_t sp;
-  uint16_t pc;
+  struct ProgramCounter pc;
   uint16_t dp; // direct page (D)
   uint8_t k; // program bank (PB)
   uint8_t db; // data bank (B)
