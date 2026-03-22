@@ -1,6 +1,6 @@
 
 CC = g++
-CFLAGS = -g -I ./snes -I ./zip -I ./libmemviewer
+CFLAGS = -g -I ./snes -I ./zip -I ./mem_viewer
 
 execname = lakesnes
 sdlcflags = `sdl2-config --cflags`
