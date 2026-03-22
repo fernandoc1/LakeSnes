@@ -19,10 +19,12 @@ typedef struct Cpu Cpu;
 
 struct ProgramCounter {
 private:
+    uint16_t previousValue; // for debugging
     uint16_t value;
 public:
     ProgramCounter(uint16_t v = 0) : value(v) {}
     ProgramCounter& operator=(uint16_t v) {
+        previousValue = value;
         value = v;
         return *this;
     }
@@ -32,32 +34,38 @@ public:
     }
 
     ProgramCounter& operator++() {
+        previousValue = value;
         ++value;
         return *this;
     }
 
     ProgramCounter operator++(int) {
         ProgramCounter tmp = *this;
+        previousValue = value;
         ++value;
         return tmp;
     }
 
     ProgramCounter& operator--() {
+        previousValue = value;
         --value;
         return *this;
     }
 
     ProgramCounter& operator+=(uint16_t v) {
+        previousValue = value;
         value += v;
         return *this;
     }
 
     ProgramCounter& operator-=(uint16_t v) {
+        previousValue = value;
         value -= v;
         return *this;
     }
-    
+
     uint16_t raw() const { return value; }
+    uint16_t previous() const { return previousValue; }
 };
 
 struct Cpu {
