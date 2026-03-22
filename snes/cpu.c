@@ -38,14 +38,16 @@ Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHand
   cpu->idle = idle;
   memset(cpu->cop_mem, 0, sizeof(cpu->cop_mem));
   cpu->cop_addr = 0;
-  cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
-  cpu->memViewer = mem_viewer_open(cpu->mem, 0x10000); // Assuming 64KB memory space
+  //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
+  //cpu->memViewer = mem_viewer_open(cpu->mem, 0x10000); // Assuming 64KB memory space
+  cpu->executionMapViewer = mem_viewer_open(cpu->executionMap, sizeof(cpu->executionMap));
   return cpu;
 }
 
 void cpu_free(Cpu* cpu) {
-  mem_viewer_destroy(cpu->copViewer);
-  mem_viewer_destroy(cpu->memViewer);
+  //mem_viewer_destroy(cpu->copViewer);
+  //mem_viewer_destroy(cpu->memViewer);
+  mem_viewer_destroy(cpu->executionMapViewer);
   free(cpu);
 }
 
@@ -159,7 +161,10 @@ static void cpu_checkInt(Cpu* cpu) {
 }
 
 static uint8_t cpu_readOpcode(Cpu* cpu) {
-  return cpu_read(cpu, (cpu->k << 16) | cpu->pc++);
+  uint8_t val = cpu_read(cpu, (cpu->k << 16) | cpu->pc);
+  cpu->executionMap[cpu->pc] = val;
+  cpu->pc++;
+  return val;
 }
 
 static uint16_t cpu_readOpcodeWord(Cpu* cpu, bool intCheck) {

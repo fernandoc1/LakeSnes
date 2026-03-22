@@ -107,6 +107,10 @@ struct Cpu {
 
   MemViewer* copViewer;
   MemViewer* memViewer;
+
+  //Execution Map
+  uint8_t executionMap[0x10000];
+  MemViewer* executionMapViewer;
 };
 
 Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);

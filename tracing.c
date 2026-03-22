@@ -100,7 +100,7 @@ void getProcessorStateCpu(Snes* snes, char* line) {
   getDisassemblyCpu(snes, disLine);
   sprintf(
     line, "CPU %02x:%04x %s A:%04x X:%04x Y:%04x SP:%04x DP:%04x DB:%02x %c %c%c%c%c%c%c%c%c",
-    snes->cpu->k, snes->cpu->pc, disLine, snes->cpu->a, snes->cpu->x, snes->cpu->y,
+    snes->cpu->k, snes->cpu->pc.raw(), disLine, snes->cpu->a, snes->cpu->x, snes->cpu->y,
     snes->cpu->sp, snes->cpu->dp, snes->cpu->db, snes->cpu->e ? 'E' : 'e',
     snes->cpu->n ? 'N' : 'n', snes->cpu->v ? 'V' : 'v', snes->cpu->mf ? 'M' : 'm', snes->cpu->xf ? 'X' : 'x',
     snes->cpu->d ? 'D' : 'd', snes->cpu->i ? 'I' : 'i', snes->cpu->z ? 'Z' : 'z', snes->cpu->c ? 'C' : 'c'
