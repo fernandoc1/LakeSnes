@@ -827,7 +827,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       uint8_t val = cpu_readOpcode(cpu);
       cpu_checkInt(cpu);
       cpu_idle(cpu);
-      //fprintf(stderr, "cop with operand %02x\n", val);
+      fprintf(stderr, "cop with operand %02x, at %04x\n", val, cpu->pc.raw());
       cpu->cop_addr = val;
       break;
     }
