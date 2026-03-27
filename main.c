@@ -19,6 +19,7 @@
 #include "zip.h"
 
 #include "snes.h"
+#include "trace_recorder.h"
 #include "tracing.h"
 
 /* depends on behaviour:
@@ -60,6 +61,9 @@ static struct {
   char* romName;
   char* savePath;
   char* statePath;
+  char* tracePath;
+  char* traceDisassemblyPath;
+  TraceRecorder* traceRecorder;
 } glb = {};
 
 static uint8_t* readFile(const char* name, int* length);
@@ -150,6 +154,9 @@ int main(int argc, char** argv) {
   glb.romName = NULL;
   glb.savePath = NULL;
   glb.statePath = NULL;
+  glb.tracePath = NULL;
+  glb.traceDisassemblyPath = NULL;
+  glb.traceRecorder = traceRecorder_init(glb.snes);
   if(argc >= 2) {
     loadRom(argv[1]);
   } else {
@@ -246,6 +253,62 @@ int main(int argc, char** argv) {
               }
               break;
             }
+            case SDLK_F5: {
+              if(traceRecorder_begin(glb.traceRecorder)) {
+                puts("Started trace recording");
+              } else {
+                puts("Failed to start trace recording");
+              }
+              break;
+            }
+            case SDLK_F6: {
+              traceRecorder_end(glb.traceRecorder);
+              printf("Stopped trace recording (%d instructions)\n", traceRecorder_getRecordCount(glb.traceRecorder));
+              break;
+            }
+            case SDLK_F7: {
+              if(glb.tracePath != NULL && traceRecorder_saveToFile(glb.traceRecorder, glb.tracePath)) {
+                printf("Saved trace to %s\n", glb.tracePath);
+              } else {
+                puts("Failed to save trace");
+              }
+              break;
+            }
+            case SDLK_F8: {
+              if(glb.tracePath != NULL && traceRecorder_loadFromFile(glb.traceRecorder, glb.tracePath)) {
+                puts("Loaded trace");
+              } else {
+                puts("Failed to load trace");
+              }
+              break;
+            }
+            case SDLK_F9: {
+              if(traceRecorder_restoreInitialState(glb.traceRecorder)) {
+                puts("Restored initial trace state");
+              } else {
+                puts("Failed to restore initial trace state");
+              }
+              break;
+            }
+            case SDLK_F10: {
+              if(glb.traceDisassemblyPath != NULL && traceRecorder_dumpDisassembly(glb.traceRecorder, glb.traceDisassemblyPath)) {
+                printf("Dumped trace disassembly to %s\n", glb.traceDisassemblyPath);
+              } else {
+                puts("Failed to dump trace disassembly");
+              }
+              break;
+            }
+            case SDLK_F11: {
+              const CpuInstructionInfo* info = traceRecorder_getRecord(glb.traceRecorder, 0);
+              if(info != NULL) {
+                char line[96];
+                traceRecorder_formatRecord(info, line, sizeof(line));
+                puts(line);
+              } else {
+                puts("Trace is empty");
+              }
+              break;
+            }
             case SDLK_RETURN: {
               if(event.key.keysym.mod & KMOD_ALT) {
                 fullscreenFlags ^= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -306,6 +369,7 @@ int main(int argc, char** argv) {
   }
   // close rom (saves battery)
   closeRom();
+  traceRecorder_free(glb.traceRecorder);
   // free snes
   snes_free(glb.snes);
   // clean sdl and free global allocs
@@ -316,6 +380,8 @@ int main(int argc, char** argv) {
   if(glb.romName) free(glb.romName);
   if(glb.savePath) free(glb.savePath);
   if(glb.statePath) free(glb.statePath);
+  if(glb.tracePath) free(glb.tracePath);
+  if(glb.traceDisassemblyPath) free(glb.traceDisassemblyPath);
   SDL_DestroyTexture(glb.texture);
   SDL_DestroyRenderer(glb.renderer);
   SDL_DestroyWindow(glb.window);
@@ -429,6 +495,7 @@ static void loadRom(const char* path) {
 
 static void closeRom() {
   if(!glb.loaded) return;
+  traceRecorder_clear(glb.traceRecorder);
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {
     uint8_t* saveData = (uint8_t*)malloc(size);
@@ -475,6 +542,22 @@ static void setPaths(const char* path) {
   strcat(glb.statePath, glb.pathSeparator);
   strncat(glb.statePath, glb.romName, strlen(glb.romName) - extLen); // cut off extension
   strcat(glb.statePath, ".lss");
+  // get trace file name
+  if(glb.tracePath) free(glb.tracePath);
+  glb.tracePath = (char*)malloc(strlen(glb.prefPath) + strlen(glb.romName) + 13); // "states/" (7) + ".ltrc" (5) + '\0'
+  strcpy(glb.tracePath, glb.prefPath);
+  strcat(glb.tracePath, "states");
+  strcat(glb.tracePath, glb.pathSeparator);
+  strncat(glb.tracePath, glb.romName, strlen(glb.romName) - extLen);
+  strcat(glb.tracePath, ".ltrc");
+  // get disassembly file name
+  if(glb.traceDisassemblyPath) free(glb.traceDisassemblyPath);
+  glb.traceDisassemblyPath = (char*)malloc(strlen(glb.prefPath) + strlen(glb.romName) + 12); // "states/" (7) + ".txt" (4) + '\0'
+  strcpy(glb.traceDisassemblyPath, glb.prefPath);
+  strcat(glb.traceDisassemblyPath, "states");
+  strcat(glb.traceDisassemblyPath, glb.pathSeparator);
+  strncat(glb.traceDisassemblyPath, glb.romName, strlen(glb.romName) - extLen);
+  strcat(glb.traceDisassemblyPath, ".txt");
 }
 
 static void setTitle(const char* romName) {

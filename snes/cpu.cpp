@@ -78,13 +78,13 @@ Cpu::Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler i
   memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
   //cpu->memViewer = mem_viewer_open(cpu->mem, 0x10000); // Assuming 64KB memory space
-  executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
+  //executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
 }
 
 Cpu::~Cpu() {
   //mem_viewer_destroy(cpu->copViewer);
   //mem_viewer_destroy(cpu->memViewer);
-  mem_viewer_destroy(executionMapViewer);
+  //mem_viewer_destroy(executionMapViewer);
 }
 
 Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
