@@ -6,6 +6,7 @@ lakesnes
 lakesnes_*
 lakesnes.*
 LakeSnes.app
+ltrc_dump
 # Created files
 dump.bin
 # sdl2 directory
