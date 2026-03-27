@@ -3,6 +3,7 @@ CC = g++
 CFLAGS = -g -I ./snes -I ./zip -I ./mem_viewer
 
 execname = lakesnes
+trace_dump_exec = ltrc_dump
 sdlcflags = `sdl2-config --cflags`
 sdlldflags = `sdl2-config --libs`
 
@@ -18,7 +19,7 @@ ofiles = $(cfiles:.c=.o) $(cppfiles:.cpp=.cpp.o)
 
 .PHONY: all clean
 
-all: libs $(execname)
+all: libs $(execname) $(trace_dump_exec)
 
 libs:
 	make -C mem_viewer
@@ -34,6 +35,9 @@ libs:
 $(execname): $(ofiles)
 	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
 
+$(trace_dump_exec): trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o
+	$(CC) $(CFLAGS) $(sdlcflags) -o $@ trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o $(sdlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
+
 clean:
 	make -C mem_viewer clean
-	rm -f $(execname) $(ofiles)
+	rm -f $(execname) $(trace_dump_exec) $(ofiles)
