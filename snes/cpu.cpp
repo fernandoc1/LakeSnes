@@ -1,13 +1,18 @@
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
 
 #include "cpu.h"
 #include "statehandler.h"
 
+static void cpu_decodeInstruction(
+  uint32_t address,
+  bool mf,
+  bool xf,
+  const uint8_t* bytes,
+  uint8_t size,
+  CpuInstructionInfo* info
+);
 static uint8_t cpu_read(Cpu* cpu, uint32_t adr);
 static void cpu_write(Cpu* cpu, uint32_t adr, uint8_t val);
 static void cpu_idle(Cpu* cpu);
@@ -30,114 +35,186 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode);
 
 // addressing modes and opcode functions not declared, only used after defintions
 
-Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
-  Cpu* cpu = new Cpu();
-  cpu->mem = mem;
-  cpu->read = read;
-  cpu->write = write;
-  cpu->idle = idle;
-  memset(cpu->cop_mem, 0, sizeof(cpu->cop_mem));
-  cpu->cop_addr = 0;
+Cpu::Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle)
+    : mem(mem),
+      read(read),
+      write(write),
+      idle(idle),
+      a(0),
+      x(0),
+      y(0),
+      sp(0),
+      pc(0),
+      dp(0),
+      k(0),
+      db(0),
+      c(false),
+      z(false),
+      v(false),
+      n(false),
+      i(false),
+      d(false),
+      xf(false),
+      mf(false),
+      e(false),
+      waiting(false),
+      stopped(false),
+      irqWanted(false),
+      nmiWanted(false),
+      intWanted(false),
+      resetWanted(false),
+      cop_addr(0),
+      copViewer(nullptr),
+      memViewer(nullptr),
+      executionMapViewer(nullptr),
+      instructionHook(nullptr),
+      instructionHookUserData(nullptr),
+      tracedInstructionAddress(0),
+      tracedInstructionMf(false),
+      tracedInstructionXf(false),
+      tracedInstructionSize(0) {
+  memset(cop_mem, 0, sizeof(cop_mem));
+  memset(executionMap, 0, sizeof(executionMap));
+  memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
   //cpu->memViewer = mem_viewer_open(cpu->mem, 0x10000); // Assuming 64KB memory space
-  cpu->executionMapViewer = mem_viewer_open(cpu->executionMap, sizeof(cpu->executionMap));
-  return cpu;
+  executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
+}
+
+Cpu::~Cpu() {
+  //mem_viewer_destroy(cpu->copViewer);
+  //mem_viewer_destroy(cpu->memViewer);
+  mem_viewer_destroy(executionMapViewer);
+}
+
+Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
+  return new Cpu(mem, read, write, idle);
 }
 
 void cpu_free(Cpu* cpu) {
-  //mem_viewer_destroy(cpu->copViewer);
-  //mem_viewer_destroy(cpu->memViewer);
-  mem_viewer_destroy(cpu->executionMapViewer);
-  free(cpu);
+  delete cpu;
+}
+
+void Cpu::reset(bool hard) {
+  if(hard) {
+    a = 0;
+    x = 0;
+    y = 0;
+    sp = 0;
+    pc = 0;
+    dp = 0;
+    k = 0;
+    db = 0;
+    c = false;
+    z = false;
+    v = false;
+    n = false;
+    i = false;
+    d = false;
+    xf = false;
+    mf = false;
+    e = false;
+    irqWanted = false;
+  }
+  waiting = false;
+  stopped = false;
+  nmiWanted = false;
+  intWanted = false;
+  resetWanted = true;
 }
 
 void cpu_reset(Cpu* cpu, bool hard) {
-  if(hard) {
-    cpu->a = 0;
-    cpu->x = 0;
-    cpu->y = 0;
-    cpu->sp = 0;
-    cpu->pc = 0;
-    cpu->dp = 0;
-    cpu->k = 0;
-    cpu->db = 0;
-    cpu->c = false;
-    cpu->z = false;
-    cpu->v = false;
-    cpu->n = false;
-    cpu->i = false;
-    cpu->d = false;
-    cpu->xf = false;
-    cpu->mf = false;
-    cpu->e = false;
-    cpu->irqWanted = false;
-  }
-  cpu->waiting = false;
-  cpu->stopped = false;
-  cpu->nmiWanted = false;
-  cpu->intWanted = false;
-  cpu->resetWanted = true;
+  cpu->reset(hard);
+}
+
+void Cpu::handleState(StateHandler* sh) {
+  sh_handleBools(sh,
+    &c, &z, &v, &n, &i, &d, &xf, &mf, &e, &waiting, &stopped,
+    &irqWanted, &nmiWanted, &intWanted, &resetWanted, NULL
+  );
+  sh_handleBytes(sh, &k, &db, NULL);
+  uint16_t pcValue = pc.raw();
+  sh_handleWords(sh, &a, &x, &y, &sp, &pcValue, &dp, NULL);
+  pc = pcValue;
 }
 
 void cpu_handleState(Cpu* cpu, StateHandler* sh) {
-  sh_handleBools(sh,
-    &cpu->c, &cpu->z, &cpu->v, &cpu->n, &cpu->i, &cpu->d, &cpu->xf, &cpu->mf, &cpu->e, &cpu->waiting, &cpu->stopped,
-    &cpu->irqWanted, &cpu->nmiWanted, &cpu->intWanted, &cpu->resetWanted, NULL
-  );
-  sh_handleBytes(sh, &cpu->k, &cpu->db, NULL);
-  sh_handleWords(sh, &cpu->a, &cpu->x, &cpu->y, &cpu->sp, &cpu->pc, &cpu->dp, NULL);
+  cpu->handleState(sh);
 }
 
-void cpu_runOpcode(Cpu* cpu) {
-  if(cpu->resetWanted) {
-    cpu->resetWanted = false;
+void Cpu::runOpcode() {
+  if(resetWanted) {
+    resetWanted = false;
     // reset: brk/interrupt without writes
-    cpu_read(cpu, (cpu->k << 16) | cpu->pc);
-    cpu_idle(cpu);
-    cpu_read(cpu, 0x100 | (cpu->sp-- & 0xff));
-    cpu_read(cpu, 0x100 | (cpu->sp-- & 0xff));
-    cpu_read(cpu, 0x100 | (cpu->sp-- & 0xff));
-    cpu->sp = (cpu->sp & 0xff) | 0x100;
-    cpu->e = true;
-    cpu->i = true;
-    cpu->d = false;
-    cpu_setFlags(cpu, cpu_getFlags(cpu)); // updates x and m flags, clears upper half of x and y if needed
-    cpu->k = 0;
-    cpu->pc = cpu_readWord(cpu, 0xfffc, 0xfffd, false);
+    cpu_read(this, (k << 16) | pc);
+    cpu_idle(this);
+    cpu_read(this, 0x100 | (sp-- & 0xff));
+    cpu_read(this, 0x100 | (sp-- & 0xff));
+    cpu_read(this, 0x100 | (sp-- & 0xff));
+    sp = (sp & 0xff) | 0x100;
+    e = true;
+    i = true;
+    d = false;
+    cpu_setFlags(this, cpu_getFlags(this)); // updates x and m flags, clears upper half of x and y if needed
+    k = 0;
+    pc = cpu_readWord(this, 0xfffc, 0xfffd, false);
     return;
   }
-  if(cpu->stopped) {
-    cpu_idleWait(cpu);
+  if(stopped) {
+    cpu_idleWait(this);
     return;
   }
-  if(cpu->waiting) {
-    if(cpu->irqWanted || cpu->nmiWanted) {
-      cpu->waiting = false;
-      cpu_idle(cpu);
-      cpu_checkInt(cpu);
-      cpu_idle(cpu);
+  if(waiting) {
+    if(irqWanted || nmiWanted) {
+      waiting = false;
+      cpu_idle(this);
+      cpu_checkInt(this);
+      cpu_idle(this);
       return;
     } else {
-      cpu_idleWait(cpu);
+      cpu_idleWait(this);
       return;
     }
   }
   // not stopped or waiting, execute a opcode or go to interrupt
-  if(cpu->intWanted) {
-    cpu_read(cpu, (cpu->k << 16) | cpu->pc);
-    cpu_doInterrupt(cpu);
+  if(intWanted) {
+    cpu_read(this, (k << 16) | pc);
+    cpu_doInterrupt(this);
   } else {
-    uint8_t opcode = cpu_readOpcode(cpu);
-    cpu_doOpcode(cpu, opcode);
+    beginInstructionTrace();
+    uint8_t opcode = cpu_readOpcode(this);
+    cpu_doOpcode(this, opcode);
+    emitInstructionTrace();
   }
 }
 
+void cpu_runOpcode(Cpu* cpu) {
+  cpu->runOpcode();
+}
+
+void Cpu::nmi() {
+  nmiWanted = true;
+}
+
 void cpu_nmi(Cpu* cpu) {
-  cpu->nmiWanted = true;
+  cpu->nmi();
+}
+
+void Cpu::setIrq(bool state) {
+  irqWanted = state;
 }
 
 void cpu_setIrq(Cpu* cpu, bool state) {
-  cpu->irqWanted = state;
+  cpu->setIrq(state);
+}
+
+void Cpu::setInstructionHook(CpuInstructionHook hook, void* userData) {
+  instructionHook = hook;
+  instructionHookUserData = userData;
+}
+
+void cpu_setInstructionHook(Cpu* cpu, CpuInstructionHook hook, void* userData) {
+  cpu->setInstructionHook(hook, userData);
 }
 
 static uint8_t cpu_read(Cpu* cpu, uint32_t adr) {
@@ -163,6 +240,7 @@ static void cpu_checkInt(Cpu* cpu) {
 static uint8_t cpu_readOpcode(Cpu* cpu) {
   uint8_t val = cpu_read(cpu, (cpu->k << 16) | cpu->pc);
   cpu->executionMap[cpu->pc] = val;
+  cpu->appendInstructionByte(val);
   cpu->pc++;
   return val;
 }
@@ -2488,6 +2566,185 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
     default: {
       printf("Unknown opcode: 0x%02x\n", opcode);
       break;
+    }
+  }
+}
+
+static const char* opcodeNames[256] = {
+  "brk #$%02x     ", "ora ($%02x,x)  ", "cop #$%02x     ", "ora $%02x,s    ", "tsb $%02x      ",   "ora $%02x      ", "asl $%02x      ", "ora [$%02x]    ", "php          ", "ora #$%s   ",   "asl          ", "phd          ", "tsb $%04x    ", "ora $%04x    ", "asl $%04x    ", "ora $%06x  ",
+  "bpl $%04x    ",   "ora ($%02x),y  ", "ora ($%02x)    ", "ora ($%02x,s),y", "trb $%02x      ",   "ora $%02x,x    ", "asl $%02x,x    ", "ora [$%02x],y  ", "clc          ", "ora $%04x,y  ", "inc          ", "tcs          ", "trb $%04x    ", "ora $%04x,x  ", "asl $%04x,x  ", "ora $%06x,x",
+  "jsr $%04x    ",   "and ($%02x,x)  ", "jsl $%06x  ",     "and $%02x,s    ", "bit $%02x      ",   "and $%02x      ", "rol $%02x      ", "and [$%02x]    ", "plp          ", "and #$%s   ",   "rol          ", "pld          ", "bit $%04x    ", "and $%04x    ", "rol $%04x    ", "and $%06x  ",
+  "bmi $%04x    ",   "and ($%02x),y  ", "and ($%02x)    ", "and ($%02x,s),y", "bit $%02x,x    ",   "and $%02x,x    ", "rol $%02x,x    ", "and [$%02x],y  ", "sec          ", "and $%04x,y  ", "dec          ", "tsc          ", "bit $%04x,x  ", "and $%04x,x  ", "rol $%04x,x  ", "and $%06x,x",
+  "rti          ",   "eor ($%02x,x)  ", "wdm #$%02x     ", "eor $%02x,s    ", "mvp $%02x, $%02x ", "eor $%02x      ", "lsr $%02x      ", "eor [$%02x]    ", "pha          ", "eor #$%s   ",   "lsr          ", "phk          ", "jmp $%04x    ", "eor $%04x    ", "lsr $%04x    ", "eor $%06x  ",
+  "bvc $%04x    ",   "eor ($%02x),y  ", "eor ($%02x)    ", "eor ($%02x,s),y", "mvn $%02x, $%02x ", "eor $%02x,x    ", "lsr $%02x,x    ", "eor [$%02x],y  ", "cli          ", "eor $%04x,y  ", "phy          ", "tcd          ", "jml $%06x  ",   "eor $%04x,x  ", "lsr $%04x,x  ", "eor $%06x,x",
+  "rts          ",   "adc ($%02x,x)  ", "per $%04x    ",   "adc $%02x,s    ", "stz $%02x      ",   "adc $%02x      ", "ror $%02x      ", "adc [$%02x]    ", "pla          ", "adc #$%s   ",   "ror          ", "rtl          ", "jmp ($%04x)  ", "adc $%04x    ", "ror $%04x    ", "adc $%06x  ",
+  "bvs $%04x    ",   "adc ($%02x),y  ", "adc ($%02x)    ", "adc ($%02x,s),y", "stz $%02x,x    ",   "adc $%02x,x    ", "ror $%02x,x    ", "adc [$%02x],y  ", "sei          ", "adc $%04x,y  ", "ply          ", "tdc          ", "jmp ($%04x,x)", "adc $%04x,x  ", "ror $%04x,x  ", "adc $%06x,x",
+  "bra $%04x    ",   "sta ($%02x,x)  ", "brl $%04x    ",   "sta $%02x,s    ", "sty $%02x      ",   "sta $%02x      ", "stx $%02x      ", "sta [$%02x]    ", "dey          ", "bit #$%s   ",   "txa          ", "phb          ", "sty $%04x    ", "sta $%04x    ", "stx $%04x    ", "sta $%06x  ",
+  "bcc $%04x    ",   "sta ($%02x),y  ", "sta ($%02x)    ", "sta ($%02x,s),y", "sty $%02x,x    ",   "sta $%02x,x    ", "stx $%02x,y    ", "sta [$%02x],y  ", "tya          ", "sta $%04x,y  ", "txs          ", "txy          ", "stz $%04x    ", "sta $%04x,x  ", "stz $%04x,x  ", "sta $%06x,x",
+  "ldy #$%s   ",     "lda ($%02x,x)  ", "ldx #$%s   ",     "lda $%02x,s    ", "ldy $%02x      ",   "lda $%02x      ", "ldx $%02x      ", "lda [$%02x]    ", "tay          ", "lda #$%s   ",   "tax          ", "plb          ", "ldy $%04x    ", "lda $%04x    ", "ldx $%04x    ", "lda $%06x  ",
+  "bcs $%04x    ",   "lda ($%02x),y  ", "lda ($%02x)    ", "lda ($%02x,s),y", "ldy $%02x,x    ",   "lda $%02x,x    ", "ldx $%02x,y    ", "lda [$%02x],y  ", "clv          ", "lda $%04x,y  ", "tsx          ", "tyx          ", "ldy $%04x,x  ", "lda $%04x,x  ", "ldx $%04x,y  ", "lda $%06x,x",
+  "cpy #$%s   ",     "cmp ($%02x,x)  ", "rep #$%02x     ", "cmp $%02x,s    ", "cpy $%02x      ",   "cmp $%02x      ", "dec $%02x      ", "cmp [$%02x]    ", "iny          ", "cmp #$%s   ",   "dex          ", "wai          ", "cpy $%04x    ", "cmp $%04x    ", "dec $%04x    ", "cmp $%06x  ",
+  "bne $%04x    ",   "cmp ($%02x),y  ", "cmp ($%02x)    ", "cmp ($%02x,s),y", "pei $%02x      ",   "cmp $%02x,x    ", "dec $%02x,x    ", "cmp [$%02x],y  ", "cld          ", "cmp $%04x,y  ", "phx          ", "stp          ", "jml [$%04x]  ", "cmp $%04x,x  ", "dec $%04x,x  ", "cmp $%06x,x",
+  "cpx #$%s   ",     "sbc ($%02x,x)  ", "sep #$%02x     ", "sbc $%02x,s    ", "cpx $%02x      ",   "sbc $%02x      ", "inc $%02x      ", "sbc [$%02x]    ", "inx          ", "sbc #$%s   ",   "nop          ", "xba          ", "cpx $%04x    ", "sbc $%04x    ", "inc $%04x    ", "sbc $%06x  ",
+  "beq $%04x    ",   "sbc ($%02x),y  ", "sbc ($%02x)    ", "sbc ($%02x,s),y", "pea #$%04x   ",     "sbc $%02x,x    ", "inc $%02x,x    ", "sbc [$%02x],y  ", "sed          ", "sbc $%04x,y  ", "plx          ", "xce          ", "jsr ($%04x,x)", "sbc $%04x,x  ", "inc $%04x,x  ", "sbc $%06x,x"
+};
+
+static const int opcodeType[256] = {
+  1, 1, 1, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  2, 1, 3, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  0, 1, 1, 1, 8, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 8, 1, 1, 1, 0, 2, 0, 0, 3, 2, 2, 3,
+  0, 1, 7, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  6, 1, 7, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  5, 1, 5, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  5, 1, 1, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3,
+  5, 1, 1, 1, 1, 1, 1, 1, 0, 4, 0, 0, 2, 2, 2, 3,
+  6, 1, 1, 1, 2, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3
+};
+
+static void cpu_trimRight(char* text) {
+  size_t len = strlen(text);
+  while(len > 0 && text[len - 1] == ' ') {
+    text[--len] = '\0';
+  }
+}
+
+static void cpu_splitInstructionText(const char* formatted, CpuInstructionInfo* info) {
+  const char* operandStart = strchr(formatted, ' ');
+  if(operandStart == nullptr) {
+    snprintf(info->mnemonic, sizeof(info->mnemonic), "%s", formatted);
+    info->operands[0] = '\0';
+    return;
+  }
+
+  size_t mnemonicLength = static_cast<size_t>(operandStart - formatted);
+  if(mnemonicLength >= sizeof(info->mnemonic)) {
+    mnemonicLength = sizeof(info->mnemonic) - 1;
+  }
+  memcpy(info->mnemonic, formatted, mnemonicLength);
+  info->mnemonic[mnemonicLength] = '\0';
+
+  while(*operandStart == ' ') {
+    operandStart++;
+  }
+  snprintf(info->operands, sizeof(info->operands), "%s", operandStart);
+  cpu_trimRight(info->operands);
+}
+
+void Cpu::beginInstructionTrace() {
+  tracedInstructionAddress = (k << 16) | pc.raw();
+  tracedInstructionMf = mf;
+  tracedInstructionXf = xf;
+  tracedInstructionSize = 0;
+  memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
+}
+
+void Cpu::appendInstructionByte(uint8_t value) {
+  if(tracedInstructionSize < sizeof(tracedInstructionBytes)) {
+    tracedInstructionBytes[tracedInstructionSize++] = value;
+  }
+}
+
+void Cpu::emitInstructionTrace() {
+  if(instructionHook == nullptr || tracedInstructionSize == 0) {
+    return;
+  }
+
+  CpuInstructionInfo info = {};
+  cpu_decodeInstruction(
+    tracedInstructionAddress,
+    tracedInstructionMf,
+    tracedInstructionXf,
+    tracedInstructionBytes,
+    tracedInstructionSize,
+    &info
+  );
+  instructionHook(instructionHookUserData, this, &info);
+}
+
+static void cpu_decodeInstruction(
+  uint32_t address,
+  bool mf,
+  bool xf,
+  const uint8_t* bytes,
+  uint8_t size,
+  CpuInstructionInfo* info
+) {
+  memset(info, 0, sizeof(*info));
+  info->address = address;
+  info->opcode = bytes[0];
+  info->size = size;
+  memcpy(info->bytes, bytes, size > sizeof(info->bytes) ? sizeof(info->bytes) : size);
+
+  const uint8_t opcode = bytes[0];
+  const uint8_t byte = size > 1 ? bytes[1] : 0;
+  const uint8_t byte2 = size > 2 ? bytes[2] : 0;
+  const uint8_t byte3 = size > 3 ? bytes[3] : 0;
+  const uint16_t word = (byte2 << 8) | byte;
+  const uint32_t longv = (byte3 << 16) | word;
+  const uint16_t pc = static_cast<uint16_t>(address & 0xffff);
+  const uint16_t rel = static_cast<uint16_t>(pc + 2 + static_cast<int8_t>(byte));
+  const uint16_t rell = static_cast<uint16_t>(pc + 3 + static_cast<int16_t>(word));
+
+  switch(opcodeType[opcode]) {
+    case 0:
+      snprintf(info->formatted, sizeof(info->formatted), "%s", opcodeNames[opcode]);
+      break;
+    case 1:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], byte);
+      break;
+    case 2:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], word);
+      break;
+    case 3:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], longv);
+      break;
+    case 4: {
+      char num[5] = "    ";
+      if(mf) {
+        snprintf(num, sizeof(num), "%02x", byte);
+      } else {
+        snprintf(num, sizeof(num), "%04x", word);
+      }
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], num);
+      break;
+    }
+    case 5: {
+      char num[5] = "    ";
+      if(xf) {
+        snprintf(num, sizeof(num), "%02x", byte);
+      } else {
+        snprintf(num, sizeof(num), "%04x", word);
+      }
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], num);
+      break;
+    }
+    case 6:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], rel);
+      break;
+    case 7:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], rell);
+      break;
+    case 8:
+      snprintf(info->formatted, sizeof(info->formatted), opcodeNames[opcode], byte2, byte);
+      break;
+    default:
+      snprintf(info->formatted, sizeof(info->formatted), "db $%02x", opcode);
+      break;
+  }
+
+  cpu_trimRight(info->formatted);
+  cpu_splitInstructionText(info->formatted, info);
+
+  for(char* p = info->mnemonic; *p != '\0'; ++p) {
+    if(*p >= 'a' && *p <= 'z') {
+      *p = static_cast<char>(*p - ('a' - 'A'));
     }
   }
 }
