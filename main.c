@@ -18,6 +18,7 @@
 
 #include "zip.h"
 
+#include "rom_disasm.h"
 #include "snes.h"
 #include "trace_recorder.h"
 #include "tracing.h"
@@ -68,6 +69,7 @@ static struct {
 } glb = {};
 
 static uint8_t* readFile(const char* name, int* length);
+static uint8_t* readRomImage(const char* path, int* length);
 static void loadRom(const char* path);
 static void closeRom(void);
 static void setPaths(const char* path);
@@ -78,8 +80,44 @@ static void renderScreen(void);
 static void handleInput(int keyCode, bool pressed);
 static bool saveTraceFile(bool verbose);
 static void beginTraceRecording(bool fromStartup);
+static int runRomDisassembly(const char* romPath, int instructionLimit);
 
 int main(int argc, char** argv) {
+  bool disasmRomMode = false;
+  int disasmInstructionLimit = 4096;
+  const char* romPath = NULL;
+
+  for(int i = 1; i < argc; ++i) {
+    if(strcmp(argv[i], "--record-trace") == 0) {
+      glb.recordTraceOnStartup = true;
+    } else if(strcmp(argv[i], "--disasm-rom") == 0) {
+      disasmRomMode = true;
+    } else if(strcmp(argv[i], "--disasm-limit") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --disasm-limit\n");
+        return 1;
+      }
+      disasmInstructionLimit = atoi(argv[++i]);
+      if(disasmInstructionLimit <= 0) {
+        fprintf(stderr, "Invalid --disasm-limit value\n");
+        return 1;
+      }
+    } else if(romPath == NULL) {
+      romPath = argv[i];
+    } else {
+      fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+      return 1;
+    }
+  }
+
+  if(disasmRomMode) {
+    if(romPath == NULL) {
+      fprintf(stderr, "Usage: %s --disasm-rom [--disasm-limit N] <rom>\n", argv[0]);
+      return 1;
+    }
+    return runRomDisassembly(romPath, disasmInstructionLimit);
+  }
+
   if(getenv("LAKESNES_DEBUG") != NULL) {
     fprintf(stderr, "Debug mode enabled. Press Enter to continue. PID: %d\n", getpid());
     getchar();
@@ -160,19 +198,6 @@ int main(int argc, char** argv) {
   glb.tracePath = NULL;
   glb.traceDisassemblyPath = NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
-  glb.recordTraceOnStartup = false;
-
-  const char* romPath = NULL;
-  for(int i = 1; i < argc; ++i) {
-    if(strcmp(argv[i], "--record-trace") == 0) {
-      glb.recordTraceOnStartup = true;
-    } else if(romPath == NULL) {
-      romPath = argv[i];
-    } else {
-      fprintf(stderr, "Unknown argument: %s\n", argv[i]);
-      return 1;
-    }
-  }
 
   if(romPath != NULL) {
     loadRom(romPath);
@@ -453,30 +478,8 @@ static bool checkExtention(const char* name, bool forZip) {
 }
 
 static void loadRom(const char* path) {
-  // zip library from https://github.com/kuba--/zip
   int length = 0;
-  uint8_t* file = NULL;
-  if(checkExtention(path, true)) {
-    struct zip_t* zip = zip_open(path, 0, 'r');
-    if(zip != NULL) {
-      int entries = zip_total_entries(zip);
-      for(int i = 0; i < entries; i++) {
-        zip_entry_openbyindex(zip, i);
-        const char* zipFilename = zip_entry_name(zip);
-        if(checkExtention(zipFilename, false)) {
-          printf("Read \"%s\" from zip\n", zipFilename);
-          size_t size = 0;
-          zip_entry_read(zip, (void**) &file, &size);
-          length = (int) size;
-          break;
-        }
-        zip_entry_close(zip);
-      }
-      zip_close(zip);
-    }
-  } else {
-    file = readFile(path, &length);
-  }
+  uint8_t* file = readRomImage(path, &length);
   if(file == NULL) {
     printf("Failed to read file '%s'\n", path);
     return;
@@ -506,6 +509,29 @@ static void loadRom(const char* path) {
     if(glb.recordTraceOnStartup) beginTraceRecording(true);
   } // else, rom load failed, old rom still loaded
   free(file);
+}
+
+static int runRomDisassembly(const char* romPath, int instructionLimit) {
+  int length = 0;
+  uint8_t* file = readRomImage(romPath, &length);
+  if(file == NULL) {
+    fprintf(stderr, "Failed to read ROM '%s'\n", romPath);
+    return 1;
+  }
+
+  Snes* snes = snes_init();
+  int result = 0;
+  if(!snes_loadRom(snes, file, length)) {
+    fprintf(stderr, "Failed to load ROM '%s'\n", romPath);
+    result = 1;
+  } else if(!rom_disassemble(snes, stdout, instructionLimit)) {
+    fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
+    result = 1;
+  }
+
+  snes_free(snes);
+  free(file);
+  return result;
 }
 
 static void closeRom() {
@@ -651,4 +677,32 @@ static uint8_t* readFile(const char* name, int* length) {
   fclose(f);
   *length = size;
   return buffer;
+}
+
+static uint8_t* readRomImage(const char* path, int* length) {
+  // zip library from https://github.com/kuba--/zip
+  uint8_t* file = NULL;
+  *length = 0;
+  if(checkExtention(path, true)) {
+    struct zip_t* zip = zip_open(path, 0, 'r');
+    if(zip != NULL) {
+      int entries = zip_total_entries(zip);
+      for(int i = 0; i < entries; i++) {
+        zip_entry_openbyindex(zip, i);
+        const char* zipFilename = zip_entry_name(zip);
+        if(checkExtention(zipFilename, false)) {
+          printf("Read \"%s\" from zip\n", zipFilename);
+          size_t size = 0;
+          zip_entry_read(zip, (void**) &file, &size);
+          *length = (int) size;
+          break;
+        }
+        zip_entry_close(zip);
+      }
+      zip_close(zip);
+    }
+  } else {
+    file = readFile(path, length);
+  }
+  return file;
 }

@@ -2608,6 +2608,25 @@ static const int opcodeType[256] = {
   6, 1, 1, 1, 2, 1, 1, 1, 0, 2, 0, 0, 2, 2, 2, 3
 };
 
+uint8_t cpu_getInstructionSize(uint8_t opcode, bool mf, bool xf) {
+  switch(opcodeType[opcode]) {
+    case 0: return 1;
+    case 1: return 2;
+    case 2: return 3;
+    case 3: return 4;
+    case 4: return mf ? 2 : 3;
+    case 5: return xf ? 2 : 3;
+    case 6: return 2;
+    case 7: return 3;
+    case 8: return 3;
+    default: return 1;
+  }
+}
+
+void cpu_disassembleInstruction(uint32_t address, bool mf, bool xf, const uint8_t* bytes, uint8_t size, CpuInstructionInfo* info) {
+  cpu_decodeInstruction(address, mf, xf, bytes, size, info);
+}
+
 static void cpu_trimRight(char* text) {
   size_t len = strlen(text);
   while(len > 0 && text[len - 1] == ' ') {

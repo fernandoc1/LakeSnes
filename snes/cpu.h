@@ -155,5 +155,7 @@ void cpu_runOpcode(Cpu* cpu);
 void cpu_nmi(Cpu* cpu);
 void cpu_setIrq(Cpu* cpu, bool state);
 void cpu_setInstructionHook(Cpu* cpu, CpuInstructionHook hook, void* userData);
+uint8_t cpu_getInstructionSize(uint8_t opcode, bool mf, bool xf);
+void cpu_disassembleInstruction(uint32_t address, bool mf, bool xf, const uint8_t* bytes, uint8_t size, CpuInstructionInfo* info);
 
 #endif

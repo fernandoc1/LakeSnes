@@ -10,9 +10,9 @@ sdlldflags = `sdl2-config --libs`
 # Source files
 cfiles = snes/spc.c snes/dsp.c snes/apu.c snes/dma.c snes/ppu.c snes/cart.c snes/input.c snes/statehandler.c snes/snes.c snes/snes_other.c \
  zip/zip.c tracing.c main.c
-cppfiles = snes/cpu.cpp snes/trace_recorder.cpp
+cppfiles = snes/cpu.cpp snes/trace_recorder.cpp snes/rom_disasm.cpp
 hfiles = snes/spc.h snes/dsp.h snes/apu.h snes/cpu.h snes/dma.h snes/ppu.h snes/cart.h snes/input.h snes/statehandler.h snes/snes.h \
- snes/trace_recorder.h zip/zip.h zip/miniz.h tracing.h
+ snes/trace_recorder.h snes/rom_disasm.h zip/zip.h zip/miniz.h tracing.h
 
 # Object files
 ofiles = $(cfiles:.c=.o) $(cppfiles:.cpp=.cpp.o)
