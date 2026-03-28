@@ -33,7 +33,7 @@ extern "C" bool lakesnes_cop_execute(
 
   // Example: use payload byte 0 to update WRAM at $7E0010.
   if(size > 0) {
-    cpu->write(cpu->context, 0x7e0010, data[0]);
+    cpu->write(cpu->snes, 0x7e0010, data[0]);
     fprintf(stderr, "hooklib: wrote %02x to $7E0010\n", data[0]);
   }
 

@@ -35,8 +35,8 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode);
 
 // addressing modes and opcode functions not declared, only used after defintions
 
-Cpu::Cpu(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle)
-    : context(context),
+Cpu::Cpu(Snes* snes, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle)
+    : snes(snes),
       read(read),
       write(write),
       idle(idle),
@@ -80,7 +80,7 @@ Cpu::Cpu(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandl
   memset(executionMap, 0, sizeof(executionMap));
   memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
-  memViewer = mem_viewer_open(context, 0x10000); // Assuming 64KB memory space
+  memViewer = mem_viewer_open(snes, 0x10000); // Assuming 64KB memory space
   //executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
 }
 
@@ -90,8 +90,8 @@ Cpu::~Cpu() {
   //mem_viewer_destroy(executionMapViewer);
 }
 
-Cpu* cpu_init(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
-  return new Cpu(context, read, write, idle);
+Cpu* cpu_init(Snes* snes, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
+  return new Cpu(snes, read, write, idle);
 }
 
 void cpu_free(Cpu* cpu) {
@@ -237,7 +237,7 @@ bool Cpu::runCoprocessorHook() {
   }
   return coprocessorHook(
     coprocessorHookUserData,
-    reinterpret_cast<Snes*>(context),
+    snes,
     this,
     cop_addr,
     &cop_mem[cop_addr],
@@ -246,19 +246,19 @@ bool Cpu::runCoprocessorHook() {
 }
 
 static uint8_t cpu_read(Cpu* cpu, uint32_t adr) {
-  return cpu->read(cpu->context, adr);
+  return cpu->read(cpu->snes, adr);
 }
 
 static void cpu_write(Cpu* cpu, uint32_t adr, uint8_t val) {
-  cpu->write(cpu->context, adr, val);
+  cpu->write(cpu->snes, adr, val);
 }
 
 static void cpu_idle(Cpu* cpu) {
-  cpu->idle(cpu->context, false);
+  cpu->idle(cpu->snes, false);
 }
 
 static void cpu_idleWait(Cpu* cpu) {
-  cpu->idle(cpu->context, true);
+  cpu->idle(cpu->snes, true);
 }
 
 static void cpu_checkInt(Cpu* cpu) {

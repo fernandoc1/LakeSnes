@@ -6,11 +6,11 @@
 #include "snes.h"
 /*
 static uint8_t read8(Cpu* cpu, uint32_t address) {
-  return cpu->read(cpu->context, address);
+  return cpu->read(cpu->snes, address);
 }
 
 static void write8(Cpu* cpu, uint32_t address, uint8_t value) {
-  cpu->write(cpu->context, address, value);
+  cpu->write(cpu->snes, address, value);
 }
 
 static uint16_t read16(Cpu* cpu, uint32_t address) {
@@ -32,7 +32,7 @@ static bool ff6_handleFunction02(Snes* snes, Cpu* cpu) {
 static bool ff6_handleFunction01(Snes* snes, Cpu* cpu) {
   fprintf(stderr, "hooklib_ff6: function 01 called snes=%p, cpu=%p\n", (void*)snes, (void*)cpu);
 
-  uint8_t* mem = (uint8_t*)cpu->context;
+  uint8_t* mem = (uint8_t*)cpu->snes;
 
   // ---------------------------------------
   // 1. Recruited
