@@ -27,7 +27,6 @@ libs:
 	make -C hooklib
 	ln -sf mem_viewer/libmemviewer.so ./
 	ln -sf mem_viewer/mem_viewer_helper ./
-	ln -sf hooklib/libhooklib.so ./
 
 %.o: %.c $(hfiles)
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
