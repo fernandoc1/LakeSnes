@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cpu.h"
+#include "snes.h"
 #include "statehandler.h"
 
 static void cpu_decodeInstruction(
@@ -80,7 +81,7 @@ Cpu::Cpu(Snes* snes, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler 
   memset(executionMap, 0, sizeof(executionMap));
   memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
-  memViewer = mem_viewer_open(snes, 0x10000); // Assuming 64KB memory space
+  memViewer = mem_viewer_open(snes->ram, SNES_RAM_SIZE);
   //executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
 }
 

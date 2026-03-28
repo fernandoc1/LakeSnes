@@ -5,8 +5,8 @@
 #include "cpu.h"
 #include "snes.h"
 
-static bool ff6_handleFunction01(Snes* snes, Cpu* cpu) {
-  fprintf(stderr, "hooklib_ff6: function 01 called snes=%p, cpu=%p\n", (void*)snes, (void*)cpu);
+static bool ff6_handleFunction01(Snes* snes) {
+  fprintf(stderr, "hooklib_ff6: function 01 called snes=%p\n", snes);
   return true;
 }
 
@@ -19,7 +19,6 @@ extern "C" bool lakesnes_cop_execute(
 ) {
   (void) userData;
   (void) address;
-  Cpu* cpu = snes->cpu;
 
   if(size == 0) {
     fprintf(stderr, "hooklib_ff6: missing function id in COP payload\n");
@@ -28,8 +27,8 @@ extern "C" bool lakesnes_cop_execute(
 
   switch(data[0]) {
     case 0x01:
-      cpu->stopped = false;
-      return ff6_handleFunction01(snes, cpu);
+      snes->cpu->stopped = false;
+      return ff6_handleFunction01(snes);
     default:
       fprintf(stderr, "hooklib_ff6: unknown function id %02x\n", data[0]);
       return false;

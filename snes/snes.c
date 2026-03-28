@@ -101,7 +101,7 @@ void snes_handleState(Snes* snes, StateHandler* sh) {
   sh_handleInts(sh, &snes->ramAdr, &snes->frames, NULL);
   sh_handleLongLongs(sh, &snes->cycles, &snes->syncCycle, NULL);
   sh_handleDoubles(sh, &snes->apuCatchupCycles, NULL);
-  sh_handleByteArray(sh, snes->ram, 0x20000);
+  sh_handleByteArray(sh, snes->ram, SNES_RAM_SIZE);
   // components
   cpu_handleState(snes->cpu, sh);
   dma_handleState(snes->dma, sh);

@@ -15,6 +15,8 @@ typedef struct Snes Snes;
 #include "input.h"
 #include "statehandler.h"
 
+#define SNES_RAM_SIZE 0x20000
+
 struct Snes {
   Cpu* cpu;
   Apu* apu;
@@ -26,7 +28,7 @@ struct Snes {
   Input* input1;
   Input* input2;
   // ram
-  uint8_t ram[0x20000];
+  uint8_t ram[SNES_RAM_SIZE];
   uint32_t ramAdr;
   // frame timing
   uint16_t hPos;

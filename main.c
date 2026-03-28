@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
                 free(filePath);
                 break;
               }
-              fwrite(glb.snes->ram, 0x20000, 1, f);
+              fwrite(glb.snes->ram, SNES_RAM_SIZE, 1, f);
               fwrite(glb.snes->ppu->vram, 0x10000, 1, f);
               fwrite(glb.snes->ppu->cgram, 0x200, 1, f);
               fwrite(glb.snes->ppu->oam, 0x200, 1, f);
