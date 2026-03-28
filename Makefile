@@ -28,8 +28,6 @@ libs:
 	make -C hooklib_ff6
 	ln -sf mem_viewer/libmemviewer.so ./
 	ln -sf mem_viewer/mem_viewer_helper ./
-	ln -sf hooklib/libhooklib.so ./
-	ln -sf hooklib_ff6/libhooklib_ff6.so ./
 
 %.o: %.c $(hfiles)
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<

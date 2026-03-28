@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <cstring>
 
 #include "cpu.h"
 #include "snes.h"
@@ -20,11 +21,8 @@ static bool ff6_handleFunction01(Snes* snes, Cpu* cpu) {
   (void) snes;
 
   uint16_t x = read16(cpu, 0x000000);
-  while(x != 0x0250) {
-    write8(cpu, 0x001600 + x, 0xff);
-    write8(cpu, 0x00161e + x, 0xff);
-    x = static_cast<uint16_t>(x + 0x0025);
-  }
+  fprintf(stderr, "hooklib_ff6: function 01 called with x=%04x\n", x);
+  memset(static_cast<uint8_t*>(cpu->mem) + 0x001600, 0x05, 0x001694 - 0x001600);
 
   return true;
 }
