@@ -35,8 +35,8 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode);
 
 // addressing modes and opcode functions not declared, only used after defintions
 
-Cpu::Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle)
-    : mem(mem),
+Cpu::Cpu(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle)
+    : context(context),
       read(read),
       write(write),
       idle(idle),
@@ -80,7 +80,7 @@ Cpu::Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler i
   memset(executionMap, 0, sizeof(executionMap));
   memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
-  memViewer = mem_viewer_open(mem, 0x10000); // Assuming 64KB memory space
+  memViewer = mem_viewer_open(context, 0x10000); // Assuming 64KB memory space
   //executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
 }
 
@@ -90,8 +90,8 @@ Cpu::~Cpu() {
   //mem_viewer_destroy(executionMapViewer);
 }
 
-Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
-  return new Cpu(mem, read, write, idle);
+Cpu* cpu_init(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle) {
+  return new Cpu(context, read, write, idle);
 }
 
 void cpu_free(Cpu* cpu) {
@@ -237,7 +237,7 @@ bool Cpu::runCoprocessorHook() {
   }
   return coprocessorHook(
     coprocessorHookUserData,
-    reinterpret_cast<Snes*>(mem),
+    reinterpret_cast<Snes*>(context),
     this,
     cop_addr,
     &cop_mem[cop_addr],
@@ -246,19 +246,19 @@ bool Cpu::runCoprocessorHook() {
 }
 
 static uint8_t cpu_read(Cpu* cpu, uint32_t adr) {
-  return cpu->read(cpu->mem, adr);
+  return cpu->read(cpu->context, adr);
 }
 
 static void cpu_write(Cpu* cpu, uint32_t adr, uint8_t val) {
-  cpu->write(cpu->mem, adr, val);
+  cpu->write(cpu->context, adr, val);
 }
 
 static void cpu_idle(Cpu* cpu) {
-  cpu->idle(cpu->mem, false);
+  cpu->idle(cpu->context, false);
 }
 
 static void cpu_idleWait(Cpu* cpu) {
-  cpu->idle(cpu->mem, true);
+  cpu->idle(cpu->context, true);
 }
 
 static void cpu_checkInt(Cpu* cpu) {

@@ -515,22 +515,22 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
   return val;
 }
 
-void snes_cpuIdle(void* mem, bool waiting) {
-  Snes* snes = (Snes*) mem;
+void snes_cpuIdle(void* context, bool waiting) {
+  Snes* snes = (Snes*) context;
   dma_handleDma(snes->dma, 6);
   snes_runCycles(snes, 6);
 }
 
-uint8_t snes_cpuRead(void* mem, uint32_t adr) {
-  Snes* snes = (Snes*) mem;
+uint8_t snes_cpuRead(void* context, uint32_t adr) {
+  Snes* snes = (Snes*) context;
   int cycles = snes_getAccessTime(snes, adr);
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);
   return snes_read(snes, adr);
 }
 
-void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val) {
-  Snes* snes = (Snes*) mem;
+void snes_cpuWrite(void* context, uint32_t adr, uint8_t val) {
+  Snes* snes = (Snes*) context;
   int cycles = snes_getAccessTime(snes, adr);
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);

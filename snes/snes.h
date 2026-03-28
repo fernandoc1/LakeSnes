@@ -73,9 +73,9 @@ uint8_t snes_readBBus(Snes* snes, uint8_t adr);
 void snes_writeBBus(Snes* snes, uint8_t adr, uint8_t val);
 uint8_t snes_read(Snes* snes, uint32_t adr);
 void snes_write(Snes* snes, uint32_t adr, uint8_t val);
-void snes_cpuIdle(void* mem, bool waiting);
-uint8_t snes_cpuRead(void* mem, uint32_t adr);
-void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val);
+void snes_cpuIdle(void* context, bool waiting);
+uint8_t snes_cpuRead(void* context, uint32_t adr);
+void snes_cpuWrite(void* context, uint32_t adr, uint8_t val);
 // debugging
 void snes_runCpuCycle(Snes* snes);
 void snes_runSpcCycle(Snes* snes);

@@ -9,9 +9,9 @@
 
 #include "mem_viewer.h"
 
-typedef uint8_t (*CpuReadHandler)(void* mem, uint32_t adr);
-typedef void (*CpuWriteHandler)(void* mem, uint32_t adr, uint8_t val);
-typedef void (*CpuIdleHandler)(void* mem, bool waiting);
+typedef uint8_t (*CpuReadHandler)(void* context, uint32_t adr);
+typedef void (*CpuWriteHandler)(void* context, uint32_t adr, uint8_t val);
+typedef void (*CpuIdleHandler)(void* context, bool waiting);
 
 typedef struct Snes Snes;
 class Cpu;
@@ -84,8 +84,8 @@ public:
 
 class Cpu {
 public:
-  // reference to memory handler, pointers to read/write/idle handlers
-  void* mem;
+  // opaque host/emulator context passed back to the bus handlers
+  void* context;
   CpuReadHandler read;
   CpuWriteHandler write;
   CpuIdleHandler idle;
@@ -128,7 +128,7 @@ public:
   uint8_t executionMap[0x10000];
   MemViewer* executionMapViewer;
 
-  Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);
+  Cpu(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);
   ~Cpu();
 
   void reset(bool hard);
@@ -156,7 +156,7 @@ private:
   void emitInstructionTrace();
 };
 
-Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);
+Cpu* cpu_init(void* context, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);
 void cpu_free(Cpu* cpu);
 void cpu_reset(Cpu* cpu, bool hard);
 void cpu_handleState(Cpu* cpu, StateHandler* sh);
