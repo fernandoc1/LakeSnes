@@ -5,13 +5,6 @@
 #include "cpu.h"
 #include "snes.h"
 
-static bool ff6_handleFunction02(Snes* snes) {
-  uint8_t* ram = (uint8_t*)snes->ram;
-  fprintf(stderr, "hooklib_ff6: function 01 called\n");
-  memset(ram + 0x001600, 0x05, 0x001694 - 0x001600);
-  return true;
-}
-
 static bool ff6_handleFunction01(Snes* snes) {
   uint8_t* ram = (uint8_t*)snes->ram;
 
