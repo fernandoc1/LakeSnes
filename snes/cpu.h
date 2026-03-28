@@ -29,7 +29,7 @@ struct CpuInstructionInfo {
 };
 
 typedef void (*CpuInstructionHook)(void* userData, const Cpu* cpu, const CpuInstructionInfo* info);
-typedef bool (*CpuCoprocessorHook)(void* userData, Snes* snes, Cpu* cpu, uint8_t address, const uint8_t* data, uint16_t size);
+typedef bool (*CpuCoprocessorHook)(void* userData, Snes* snes, uint8_t address, const uint8_t* data, uint16_t size);
 
 struct ProgramCounter {
 private:

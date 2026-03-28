@@ -238,7 +238,6 @@ bool Cpu::runCoprocessorHook() {
   return coprocessorHook(
     coprocessorHookUserData,
     snes,
-    this,
     cop_addr,
     &cop_mem[cop_addr],
     cop_size
