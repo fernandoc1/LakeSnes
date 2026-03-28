@@ -76,6 +76,8 @@ static bool checkExtention(const char* name, bool forZip);
 static void playAudio(void);
 static void renderScreen(void);
 static void handleInput(int keyCode, bool pressed);
+static bool saveTraceFile(bool verbose);
+static void beginTraceRecording(bool fromStartup);
 
 int main(int argc, char** argv) {
   if(getenv("LAKESNES_DEBUG") != NULL) {
@@ -269,19 +271,12 @@ int main(int argc, char** argv) {
               break;
             }
             case SDLK_F5: {
-              if(traceRecorder_begin(glb.traceRecorder)) {
-                if(glb.tracePath != NULL) {
-                  printf("Started trace recording to %s\n", glb.tracePath);
-                } else {
-                  puts("Started trace recording");
-                }
-              } else {
-                puts("Failed to start trace recording");
-              }
+              beginTraceRecording(false);
               break;
             }
             case SDLK_F6: {
               traceRecorder_end(glb.traceRecorder);
+              saveTraceFile(false);
               printf("Stopped trace recording (%d instructions)\n", traceRecorder_getRecordCount(glb.traceRecorder));
               break;
             }
@@ -508,23 +503,15 @@ static void loadRom(const char* path) {
       }
       free(saveData);
     }
-    if(glb.recordTraceOnStartup) {
-      if(traceRecorder_begin(glb.traceRecorder)) {
-        if(glb.tracePath != NULL) {
-          printf("Started trace recording from startup to %s\n", glb.tracePath);
-        } else {
-          puts("Started trace recording from startup");
-        }
-      } else {
-        puts("Failed to start trace recording from startup");
-      }
-    }
+    if(glb.recordTraceOnStartup) beginTraceRecording(true);
   } // else, rom load failed, old rom still loaded
   free(file);
 }
 
 static void closeRom() {
   if(!glb.loaded) return;
+  saveTraceFile(false);
+  traceRecorder_end(glb.traceRecorder);
   traceRecorder_clear(glb.traceRecorder);
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {
@@ -539,6 +526,54 @@ static void closeRom() {
       puts("Failed to save battery data");
     }
     free(saveData);
+  }
+}
+
+static bool saveTraceFile(bool verbose) {
+  if(glb.tracePath == NULL) {
+    if(verbose) puts("Trace path is not available");
+    return false;
+  }
+  if(traceRecorder_getRecordCount(glb.traceRecorder) == 0 && !traceRecorder_isRecording(glb.traceRecorder)) {
+    return false;
+  }
+  if(traceRecorder_saveToFile(glb.traceRecorder, glb.tracePath)) {
+    if(verbose) printf("Saved trace to %s\n", glb.tracePath);
+    return true;
+  }
+  if(verbose) puts("Failed to save trace");
+  return false;
+}
+
+static void beginTraceRecording(bool fromStartup) {
+  if(!traceRecorder_begin(glb.traceRecorder)) {
+    if(fromStartup) {
+      puts("Failed to start trace recording from startup");
+    } else {
+      puts("Failed to start trace recording");
+    }
+    return;
+  }
+
+  if(!saveTraceFile(false)) {
+    if(fromStartup) {
+      puts("Failed to create initial trace file from startup");
+    } else {
+      puts("Failed to create initial trace file");
+    }
+    return;
+  }
+
+  if(glb.tracePath != NULL) {
+    if(fromStartup) {
+      printf("Started trace recording from startup to %s\n", glb.tracePath);
+    } else {
+      printf("Started trace recording to %s\n", glb.tracePath);
+    }
+  } else if(fromStartup) {
+    puts("Started trace recording from startup");
+  } else {
+    puts("Started trace recording");
   }
 }
 
