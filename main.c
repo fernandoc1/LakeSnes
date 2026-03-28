@@ -8,6 +8,9 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 #include "strings.h"
 
 #ifdef SDL2SUBDIR
@@ -66,6 +69,7 @@ static struct {
   char* traceDisassemblyPath;
   TraceRecorder* traceRecorder;
   bool recordTraceOnStartup;
+  void* copLibHandle;
 } glb = {};
 
 static uint8_t* readFile(const char* name, int* length);
@@ -81,15 +85,24 @@ static void handleInput(int keyCode, bool pressed);
 static bool saveTraceFile(bool verbose);
 static void beginTraceRecording(bool fromStartup);
 static int runRomDisassembly(const char* romPath, int instructionLimit);
+static bool loadCoprocessorLibrary(const char* path);
+static void unloadCoprocessorLibrary(void);
 
 int main(int argc, char** argv) {
   bool disasmRomMode = false;
   int disasmInstructionLimit = 4096;
   const char* romPath = NULL;
+  const char* copLibPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
       glb.recordTraceOnStartup = true;
+    } else if(strcmp(argv[i], "--cop-lib") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --cop-lib\n");
+        return 1;
+      }
+      copLibPath = argv[++i];
     } else if(strcmp(argv[i], "--disasm-rom") == 0) {
       disasmRomMode = true;
     } else if(strcmp(argv[i], "--disasm-limit") == 0) {
@@ -198,6 +211,10 @@ int main(int argc, char** argv) {
   glb.tracePath = NULL;
   glb.traceDisassemblyPath = NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
+  glb.copLibHandle = NULL;
+  if(copLibPath != NULL && !loadCoprocessorLibrary(copLibPath)) {
+    return 1;
+  }
 
   if(romPath != NULL) {
     loadRom(romPath);
@@ -408,6 +425,7 @@ int main(int argc, char** argv) {
   }
   // close rom (saves battery)
   closeRom();
+  unloadCoprocessorLibrary();
   traceRecorder_free(glb.traceRecorder);
   // free snes
   snes_free(glb.snes);
@@ -661,6 +679,44 @@ static void setTitle(const char* romName) {
   strcat(title, romName);
   SDL_SetWindowTitle(glb.window, title);
   free(title);
+}
+
+static bool loadCoprocessorLibrary(const char* path) {
+#ifdef _WIN32
+  fprintf(stderr, "--cop-lib is not implemented on Windows\n");
+  (void) path;
+  return false;
+#else
+  glb.copLibHandle = dlopen(path, RTLD_NOW);
+  if(glb.copLibHandle == NULL) {
+    fprintf(stderr, "Failed to load coprocessor library '%s': %s\n", path, dlerror());
+    return false;
+  }
+
+  void* symbol = dlsym(glb.copLibHandle, LAKESNES_COPROCESSOR_HOOK_SYMBOL);
+  if(symbol == NULL) {
+    fprintf(stderr, "Failed to find symbol '%s' in '%s': %s\n", LAKESNES_COPROCESSOR_HOOK_SYMBOL, path, dlerror());
+    dlclose(glb.copLibHandle);
+    glb.copLibHandle = NULL;
+    return false;
+  }
+
+  cpu_setCoprocessorHook(glb.snes->cpu, reinterpret_cast<CpuCoprocessorHook>(symbol), NULL);
+  printf("Loaded coprocessor library %s\n", path);
+  return true;
+#endif
+}
+
+static void unloadCoprocessorLibrary(void) {
+#ifndef _WIN32
+  if(glb.snes != NULL) {
+    cpu_setCoprocessorHook(glb.snes->cpu, NULL, NULL);
+  }
+  if(glb.copLibHandle != NULL) {
+    dlclose(glb.copLibHandle);
+    glb.copLibHandle = NULL;
+  }
+#endif
 }
 
 static uint8_t* readFile(const char* name, int* length) {

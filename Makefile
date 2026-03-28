@@ -6,6 +6,7 @@ execname = lakesnes
 trace_dump_exec = ltrc_dump
 sdlcflags = `sdl2-config --cflags`
 sdlldflags = `sdl2-config --libs`
+dlldflags = -ldl
 
 # Source files
 cfiles = snes/spc.c snes/dsp.c snes/apu.c snes/dma.c snes/ppu.c snes/cart.c snes/input.c snes/statehandler.c snes/snes.c snes/snes_other.c \
@@ -33,7 +34,7 @@ libs:
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
 
 $(execname): $(ofiles)
-	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
+	$(CC) $(CFLAGS) -o $@ $(ofiles) $(sdlldflags) $(dlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
 
 $(trace_dump_exec): trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o
 	$(CC) $(CFLAGS) $(sdlcflags) -o $@ trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o $(sdlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'

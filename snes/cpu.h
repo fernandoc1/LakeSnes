@@ -13,7 +13,10 @@ typedef uint8_t (*CpuReadHandler)(void* mem, uint32_t adr);
 typedef void (*CpuWriteHandler)(void* mem, uint32_t adr, uint8_t val);
 typedef void (*CpuIdleHandler)(void* mem, bool waiting);
 
+typedef struct Snes Snes;
 class Cpu;
+
+#define LAKESNES_COPROCESSOR_HOOK_SYMBOL "lakesnes_cop_execute"
 
 struct CpuInstructionInfo {
   uint32_t address;
@@ -26,6 +29,7 @@ struct CpuInstructionInfo {
 };
 
 typedef void (*CpuInstructionHook)(void* userData, const Cpu* cpu, const CpuInstructionInfo* info);
+typedef bool (*CpuCoprocessorHook)(void* userData, Snes* snes, Cpu* cpu, uint8_t address, const uint8_t* data, uint16_t size);
 
 struct ProgramCounter {
 private:
@@ -115,6 +119,7 @@ public:
   // Coprocessor state
   uint8_t cop_mem[256];
   uint8_t cop_addr;
+  uint16_t cop_size;
 
   MemViewer* copViewer;
   MemViewer* memViewer;
@@ -132,11 +137,15 @@ public:
   void nmi();
   void setIrq(bool state);
   void setInstructionHook(CpuInstructionHook hook, void* userData);
+  void setCoprocessorHook(CpuCoprocessorHook hook, void* userData);
+  bool runCoprocessorHook();
   void appendInstructionByte(uint8_t value);
 
 private:
   CpuInstructionHook instructionHook;
   void* instructionHookUserData;
+  CpuCoprocessorHook coprocessorHook;
+  void* coprocessorHookUserData;
   uint32_t tracedInstructionAddress;
   bool tracedInstructionMf;
   bool tracedInstructionXf;
@@ -155,6 +164,7 @@ void cpu_runOpcode(Cpu* cpu);
 void cpu_nmi(Cpu* cpu);
 void cpu_setIrq(Cpu* cpu, bool state);
 void cpu_setInstructionHook(Cpu* cpu, CpuInstructionHook hook, void* userData);
+void cpu_setCoprocessorHook(Cpu* cpu, CpuCoprocessorHook hook, void* userData);
 uint8_t cpu_getInstructionSize(uint8_t opcode, bool mf, bool xf);
 void cpu_disassembleInstruction(uint32_t address, bool mf, bool xf, const uint8_t* bytes, uint8_t size, CpuInstructionInfo* info);
 

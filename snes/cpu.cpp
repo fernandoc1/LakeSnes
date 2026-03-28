@@ -64,11 +64,14 @@ Cpu::Cpu(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler i
       intWanted(false),
       resetWanted(false),
       cop_addr(0),
+      cop_size(0),
       copViewer(nullptr),
       memViewer(nullptr),
       executionMapViewer(nullptr),
       instructionHook(nullptr),
       instructionHookUserData(nullptr),
+      coprocessorHook(nullptr),
+      coprocessorHookUserData(nullptr),
       tracedInstructionAddress(0),
       tracedInstructionMf(false),
       tracedInstructionXf(false),
@@ -121,6 +124,8 @@ void Cpu::reset(bool hard) {
   nmiWanted = false;
   intWanted = false;
   resetWanted = true;
+  cop_addr = 0;
+  cop_size = 0;
 }
 
 void cpu_reset(Cpu* cpu, bool hard) {
@@ -215,6 +220,29 @@ void Cpu::setInstructionHook(CpuInstructionHook hook, void* userData) {
 
 void cpu_setInstructionHook(Cpu* cpu, CpuInstructionHook hook, void* userData) {
   cpu->setInstructionHook(hook, userData);
+}
+
+void Cpu::setCoprocessorHook(CpuCoprocessorHook hook, void* userData) {
+  coprocessorHook = hook;
+  coprocessorHookUserData = userData;
+}
+
+void cpu_setCoprocessorHook(Cpu* cpu, CpuCoprocessorHook hook, void* userData) {
+  cpu->setCoprocessorHook(hook, userData);
+}
+
+bool Cpu::runCoprocessorHook() {
+  if(coprocessorHook == nullptr) {
+    return false;
+  }
+  return coprocessorHook(
+    coprocessorHookUserData,
+    reinterpret_cast<Snes*>(mem),
+    this,
+    cop_addr,
+    &cop_mem[cop_addr],
+    cop_size
+  );
 }
 
 static uint8_t cpu_read(Cpu* cpu, uint32_t adr) {
@@ -907,6 +935,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu_idle(cpu);
       fprintf(stderr, "cop with operand %02x, at %04x\n", val, cpu->pc.raw());
       cpu->cop_addr = val;
+      cpu->cop_size = 0;
       break;
     }
     case 0x03: { // ora sr
@@ -1315,7 +1344,10 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu_checkInt(cpu);
       cpu_idle(cpu);
       fprintf(stderr, "wdm with operand %02x\n", val);
-      cpu->cop_mem[cpu->cop_addr] = val;
+      if(cpu->cop_addr + cpu->cop_size < sizeof(cpu->cop_mem)) {
+        cpu->cop_mem[cpu->cop_addr + cpu->cop_size] = val;
+        cpu->cop_size++;
+      }
       break;
     }
     case 0x43: { // eor sr
@@ -2329,7 +2361,14 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
     case 0xdb: { // stp imp
       cpu_idle(cpu);
       cpu_idle(cpu);
-      fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
+      if(cpu->runCoprocessorHook()) {
+        break;
+      }
+      if(cpu->cop_size > 0) {
+        fprintf(stderr, "coprocessor hook declined request at %06x\n", ((cpu->k << 16) | (cpu->pc.raw() - 1)));
+      } else {
+        fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
+      }
       break;
     }
     case 0xdc: { // jml ial
