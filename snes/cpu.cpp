@@ -1314,7 +1314,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       uint8_t val = cpu_readOpcode(cpu);
       cpu_checkInt(cpu);
       cpu_idle(cpu);
-      //fprintf(stderr, "wdm with operand %02x\n", val);
+      fprintf(stderr, "wdm with operand %02x\n", val);
       cpu->cop_mem[cpu->cop_addr] = val;
       break;
     }
@@ -2329,7 +2329,7 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
     case 0xdb: { // stp imp
       cpu_idle(cpu);
       cpu_idle(cpu);
-      //fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
+      fprintf(stderr, "stp encountered at %06x\n", cpu->pc - 1);
       break;
     }
     case 0xdc: { // jml ial

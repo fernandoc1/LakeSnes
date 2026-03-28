@@ -64,6 +64,7 @@ static struct {
   char* tracePath;
   char* traceDisassemblyPath;
   TraceRecorder* traceRecorder;
+  bool recordTraceOnStartup;
 } glb = {};
 
 static uint8_t* readFile(const char* name, int* length);
@@ -157,8 +158,22 @@ int main(int argc, char** argv) {
   glb.tracePath = NULL;
   glb.traceDisassemblyPath = NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
-  if(argc >= 2) {
-    loadRom(argv[1]);
+  glb.recordTraceOnStartup = false;
+
+  const char* romPath = NULL;
+  for(int i = 1; i < argc; ++i) {
+    if(strcmp(argv[i], "--record-trace") == 0) {
+      glb.recordTraceOnStartup = true;
+    } else if(romPath == NULL) {
+      romPath = argv[i];
+    } else {
+      fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+      return 1;
+    }
+  }
+
+  if(romPath != NULL) {
+    loadRom(romPath);
   } else {
     puts("No rom loaded");
   }
@@ -255,7 +270,11 @@ int main(int argc, char** argv) {
             }
             case SDLK_F5: {
               if(traceRecorder_begin(glb.traceRecorder)) {
-                puts("Started trace recording");
+                if(glb.tracePath != NULL) {
+                  printf("Started trace recording to %s\n", glb.tracePath);
+                } else {
+                  puts("Started trace recording");
+                }
               } else {
                 puts("Failed to start trace recording");
               }
@@ -488,6 +507,17 @@ static void loadRom(const char* path) {
         puts("Failed to load battery data");
       }
       free(saveData);
+    }
+    if(glb.recordTraceOnStartup) {
+      if(traceRecorder_begin(glb.traceRecorder)) {
+        if(glb.tracePath != NULL) {
+          printf("Started trace recording from startup to %s\n", glb.tracePath);
+        } else {
+          puts("Started trace recording from startup");
+        }
+      } else {
+        puts("Failed to start trace recording from startup");
+      }
     }
   } // else, rom load failed, old rom still loaded
   free(file);
