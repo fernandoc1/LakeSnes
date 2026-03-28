@@ -25,8 +25,11 @@ all: libs $(execname) $(trace_dump_exec)
 libs:
 	make -C mem_viewer
 	make -C hooklib
+	make -C hooklib_ff6
 	ln -sf mem_viewer/libmemviewer.so ./
 	ln -sf mem_viewer/mem_viewer_helper ./
+	ln -sf hooklib/libhooklib.so ./
+	ln -sf hooklib_ff6/libhooklib_ff6.so ./
 
 %.o: %.c $(hfiles)
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
@@ -43,4 +46,5 @@ $(trace_dump_exec): trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes
 clean:
 	make -C mem_viewer clean
 	make -C hooklib clean
+	make -C hooklib_ff6 clean
 	rm -f $(execname) $(trace_dump_exec) $(ofiles)
