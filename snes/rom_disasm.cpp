@@ -9,6 +9,12 @@
 #include "rom_disasm.h"
 #include "cpu.h"
 
+static const size_t kMaxCallStackDepth = 32;
+static const size_t kContextKeyDepth = 6;
+static const size_t kMaxContextsPerAddress = 64;
+static const size_t kNodeLimitReached = (size_t)-1;
+static const size_t kContextLimitReached = (size_t)-2;
+
 struct RomAnalysisState {
   uint32_t address;
   bool e;
@@ -17,6 +23,7 @@ struct RomAnalysisState {
   bool c;
   bool cKnown;
   std::vector<uint64_t> returnStack;
+  std::vector<uint32_t> callTargetStack;
 };
 
 struct RomAnalysisNode {
@@ -58,10 +65,19 @@ static std::string rom_disasm_stateKey(const RomAnalysisState& state) {
 
   std::string key = header;
   char entry[32];
-  for(size_t i = 0; i < state.returnStack.size(); ++i) {
+  snprintf(entry, sizeof(entry), ":rd%zu:cd%zu", state.returnStack.size(), state.callTargetStack.size());
+  key += entry;
+
+  const size_t returnStart = state.returnStack.size() > kContextKeyDepth ? state.returnStack.size() - kContextKeyDepth : 0;
+  for(size_t i = returnStart; i < state.returnStack.size(); ++i) {
     const uint32_t returnAddress = state.returnStack[i] & 0xffffff;
     const uint32_t callAddress = (state.returnStack[i] >> 24) & 0xffffff;
     snprintf(entry, sizeof(entry), ":%06x>%06x", callAddress, returnAddress);
+    key += entry;
+  }
+  const size_t callStart = state.callTargetStack.size() > kContextKeyDepth ? state.callTargetStack.size() - kContextKeyDepth : 0;
+  for(size_t i = callStart; i < state.callTargetStack.size(); ++i) {
+    snprintf(entry, sizeof(entry), ":@%06x", state.callTargetStack[i] & 0xffffff);
     key += entry;
   }
   return key;
@@ -77,6 +93,15 @@ static uint32_t rom_disasm_getReturnAddress(uint64_t frame) {
 
 static uint32_t rom_disasm_getCallAddress(uint64_t frame) {
   return (frame >> 24) & 0xffffff;
+}
+
+static bool rom_disasm_callStackContains(const RomAnalysisState& state, uint32_t address) {
+  for(size_t i = 0; i < state.callTargetStack.size(); ++i) {
+    if((state.callTargetStack[i] & 0xffffff) == (address & 0xffffff)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool rom_disasm_isRomAddress(const Snes* snes, uint32_t address) {
@@ -227,13 +252,24 @@ static uint32_t rom_disasm_longTarget(const CpuInstructionInfo& info) {
   return ((uint32_t)info.bytes[3] << 16) | ((uint32_t)info.bytes[2] << 8) | info.bytes[1];
 }
 
+static void rom_disasm_enqueueSyntheticSuccessor(
+  size_t from,
+  const char* edgeLabel,
+  const std::string& nodeLabel,
+  std::vector<RomAnalysisNode>* nodes,
+  std::unordered_map<std::string, size_t>* syntheticLookup,
+  std::vector<RomAnalysisEdge>* edges,
+  std::unordered_set<std::string>* edgeSet
+);
+
 static size_t rom_disasm_getOrCreateNode(
   Snes* snes,
   const RomAnalysisState& state,
   int instructionLimit,
   std::vector<RomAnalysisNode>* nodes,
   std::unordered_map<std::string, size_t>* nodeLookup,
-  std::vector<size_t>* worklist
+  std::vector<size_t>* worklist,
+  std::unordered_map<uint32_t, size_t>* addressContextCounts
 ) {
   const std::string key = rom_disasm_stateKey(state);
   std::unordered_map<std::string, size_t>::const_iterator it = nodeLookup->find(key);
@@ -241,7 +277,12 @@ static size_t rom_disasm_getOrCreateNode(
     return it->second;
   }
   if(instructionLimit > 0 && (int)nodes->size() >= instructionLimit) {
-    return (size_t)-1;
+    return kNodeLimitReached;
+  }
+  const uint32_t addressKey = state.address & 0xffffff;
+  std::unordered_map<uint32_t, size_t>::const_iterator contextIt = addressContextCounts->find(addressKey);
+  if(contextIt != addressContextCounts->end() && contextIt->second >= kMaxContextsPerAddress) {
+    return kContextLimitReached;
   }
 
   RomAnalysisNode node = {};
@@ -253,6 +294,7 @@ static size_t rom_disasm_getOrCreateNode(
   nodes->push_back(node);
   (*nodeLookup)[key] = index;
   worklist->push_back(index);
+  (*addressContextCounts)[addressKey] += 1;
   return index;
 }
 
@@ -282,7 +324,7 @@ static void rom_disasm_addEdge(
   std::vector<RomAnalysisEdge>* edges,
   std::unordered_set<std::string>* edgeSet
 ) {
-  if(to == (size_t)-1) {
+  if(to == kNodeLimitReached || to == kContextLimitReached) {
     return;
   }
 
@@ -304,14 +346,26 @@ static void rom_disasm_enqueueSuccessor(
   std::vector<RomAnalysisNode>* nodes,
   std::unordered_map<std::string, size_t>* nodeLookup,
   std::vector<size_t>* worklist,
+  std::unordered_map<uint32_t, size_t>* addressContextCounts,
+  std::unordered_map<std::string, size_t>* syntheticLookup,
   std::vector<RomAnalysisEdge>* edges,
-  std::unordered_set<std::string>* edgeSet
+  std::unordered_set<std::string>* edgeSet,
+  size_t* contextLimitCount
 ) {
   if(!rom_disasm_isRomAddress(snes, state.address)) {
     return;
   }
 
-  const size_t to = rom_disasm_getOrCreateNode(snes, state, instructionLimit, nodes, nodeLookup, worklist);
+  const size_t to = rom_disasm_getOrCreateNode(snes, state, instructionLimit, nodes, nodeLookup, worklist, addressContextCounts);
+  if(to == kContextLimitReached) {
+    if(contextLimitCount != NULL) {
+      *contextLimitCount += 1;
+    }
+    char syntheticLabel[96];
+    snprintf(syntheticLabel, sizeof(syntheticLabel), "context limit\\n%06x", state.address & 0xffffff);
+    rom_disasm_enqueueSyntheticSuccessor(from, "context-limit", syntheticLabel, nodes, syntheticLookup, edges, edgeSet);
+    return;
+  }
   rom_disasm_addEdge(from, to, label, edges, edgeSet);
 }
 
@@ -483,16 +537,22 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   initialState.xf = true;
   initialState.c = false;
   initialState.cKnown = true;
+  initialState.callTargetStack.push_back(initialState.address);
 
   std::vector<RomAnalysisNode> nodes;
   std::unordered_map<std::string, size_t> nodeLookup;
   std::vector<size_t> worklist;
+  std::unordered_map<uint32_t, size_t> addressContextCounts;
   std::vector<RomAnalysisEdge> edges;
   std::unordered_set<std::string> edgeSet;
   std::unordered_map<std::string, size_t> syntheticLookup;
   size_t unresolvedIndirectJumpCount = 0;
   size_t unresolvedIndirectCallCount = 0;
   size_t unresolvedReturnCount = 0;
+  size_t recursiveCallCount = 0;
+  size_t mutualRecursiveCallCount = 0;
+  size_t maxCallDepthCount = 0;
+  size_t contextLimitCount = 0;
   bool hitNodeLimit = false;
   bool stopRequested = false;
   size_t lastStatusNodeCount = 0;
@@ -501,7 +561,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   if(!rom_disasm_isRomAddress(snes, initialState.address)) {
     return false;
   }
-  if(rom_disasm_getOrCreateNode(snes, initialState, instructionLimit, &nodes, &nodeLookup, &worklist) == (size_t)-1) {
+  if(rom_disasm_getOrCreateNode(snes, initialState, instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts) == kNodeLimitReached) {
     return false;
   }
 
@@ -540,48 +600,82 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
       case 0xf0: {
         RomAnalysisState branchState = nextState;
         branchState.address = rom_disasm_relativeTarget(node.info);
-        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "branch", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
-        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "branch", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x80: {
         RomAnalysisState branchState = nextState;
         branchState.address = rom_disasm_relativeTarget(node.info);
-        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x82: {
         RomAnalysisState branchState = nextState;
         branchState.address = rom_disasm_relativeLongTarget(node.info);
-        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x20: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_absoluteTarget(node.info);
-        callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
-        rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
-        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        const bool directRecursion =
+          !node.state.callTargetStack.empty() &&
+          ((node.state.callTargetStack.back() & 0xffffff) == (callState.address & 0xffffff));
+        if(callState.callTargetStack.size() >= kMaxCallStackDepth) {
+          maxCallDepthCount++;
+          rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "call-depth-limit", std::string("max call depth reached\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+        } else if(rom_disasm_callStackContains(node.state, callState.address)) {
+          if(directRecursion) {
+            recursiveCallCount++;
+            rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "recursive-call", std::string("recursive call\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+          } else {
+            mutualRecursiveCallCount++;
+            rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "mutual-recursion", std::string("mutual recursion\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+          }
+        } else {
+          callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
+          callState.callTargetStack.push_back(callState.address);
+          rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        }
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x22: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_longTarget(node.info);
-        callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
-        rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
-        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        const bool directRecursion =
+          !node.state.callTargetStack.empty() &&
+          ((node.state.callTargetStack.back() & 0xffffff) == (callState.address & 0xffffff));
+        if(callState.callTargetStack.size() >= kMaxCallStackDepth) {
+          maxCallDepthCount++;
+          rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "call-depth-limit", std::string("max call depth reached\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+        } else if(rom_disasm_callStackContains(node.state, callState.address)) {
+          if(directRecursion) {
+            recursiveCallCount++;
+            rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "recursive-call", std::string("recursive call\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+          } else {
+            mutualRecursiveCallCount++;
+            rom_disasm_enqueueSyntheticSuccessor(nodeIndex, "mutual-recursion", std::string("mutual recursion\\n") + node.info.formatted, &nodes, &syntheticLookup, &edges, &edgeSet);
+          }
+        } else {
+          callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
+          callState.callTargetStack.push_back(callState.address);
+          rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        }
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x4c: {
         RomAnalysisState jumpState = nextState;
         jumpState.address = rom_disasm_absoluteTarget(node.info);
-        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0x5c: {
         RomAnalysisState jumpState = nextState;
         jumpState.address = rom_disasm_longTarget(node.info);
-        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       }
       case 0xfc:
@@ -595,7 +689,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
           &edges,
           &edgeSet
         );
-        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
       case 0x6c:
       case 0x7c:
@@ -625,7 +719,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
           const uint32_t callAddress = rom_disasm_getCallAddress(frame);
           returnState.address = returnAddress;
           returnState.returnStack.pop_back();
-          rom_disasm_enqueueSuccessor(snes, returnState, nodeIndex, "return", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+          if(!returnState.callTargetStack.empty()) {
+            returnState.callTargetStack.pop_back();
+          }
+          rom_disasm_enqueueSuccessor(snes, returnState, nodeIndex, "return", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
           rom_disasm_enqueueCallsiteEdge(
             callAddress,
             nodeIndex,
@@ -650,7 +747,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
         }
         break;
       default:
-        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
         break;
     }
 
@@ -712,6 +809,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   fprintf(out, "  // unresolved indirect jumps: %zu\n", unresolvedIndirectJumpCount);
   fprintf(out, "  // unresolved indirect calls: %zu\n", unresolvedIndirectCallCount);
   fprintf(out, "  // unresolved returns: %zu\n", unresolvedReturnCount);
+  fprintf(out, "  // recursive calls cut off: %zu\n", recursiveCallCount);
+  fprintf(out, "  // mutually recursive calls cut off: %zu\n", mutualRecursiveCallCount);
+  fprintf(out, "  // max call depth cut off: %zu\n", maxCallDepthCount);
+  fprintf(out, "  // context limit cut off: %zu\n", contextLimitCount);
   if(instructionLimit == 0) {
     fprintf(out, "  // limit: none\n");
   } else {
