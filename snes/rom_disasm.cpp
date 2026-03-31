@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -39,6 +40,12 @@ struct RomAnalysisEdge {
   size_t from;
   size_t to;
   const char* label;
+};
+
+struct RomFunctionInfo {
+  uint32_t entry;
+  bool recursive;
+  int recursionGroup;
 };
 
 static void rom_disasm_format(const CpuInstructionInfo* info, FILE* out) {
@@ -252,6 +259,93 @@ static uint32_t rom_disasm_longTarget(const CpuInstructionInfo& info) {
   return ((uint32_t)info.bytes[3] << 16) | ((uint32_t)info.bytes[2] << 8) | info.bytes[1];
 }
 
+static uint32_t rom_disasm_currentFunctionEntry(const RomAnalysisState& state) {
+  if(!state.callTargetStack.empty()) {
+    return state.callTargetStack.back() & 0xffffff;
+  }
+  return state.address & 0xffffff;
+}
+
+static void rom_disasm_collectFunctionInfos(
+  const std::unordered_map<uint32_t, std::unordered_set<uint32_t> >& functionCalls,
+  std::unordered_map<uint32_t, RomFunctionInfo>* functionInfos
+) {
+  std::vector<uint32_t> functions;
+  std::unordered_map<uint32_t, int> functionIndex;
+  for(std::unordered_map<uint32_t, std::unordered_set<uint32_t> >::const_iterator it = functionCalls.begin(); it != functionCalls.end(); ++it) {
+    functionIndex[it->first] = (int)functions.size();
+    functions.push_back(it->first);
+  }
+
+  std::vector<int> index(functions.size(), -1);
+  std::vector<int> lowlink(functions.size(), -1);
+  std::vector<bool> onStack(functions.size(), false);
+  std::vector<int> stack;
+  int nextIndex = 0;
+  int nextGroup = 1;
+
+  std::function<void(int)> strongConnect = [&](int v) {
+    index[v] = nextIndex;
+    lowlink[v] = nextIndex;
+    nextIndex++;
+    stack.push_back(v);
+    onStack[v] = true;
+
+    std::unordered_map<uint32_t, std::unordered_set<uint32_t> >::const_iterator edgeIt = functionCalls.find(functions[v]);
+    if(edgeIt != functionCalls.end()) {
+      for(std::unordered_set<uint32_t>::const_iterator toIt = edgeIt->second.begin(); toIt != edgeIt->second.end(); ++toIt) {
+        std::unordered_map<uint32_t, int>::const_iterator targetIndexIt = functionIndex.find(*toIt);
+        if(targetIndexIt == functionIndex.end()) {
+          continue;
+        }
+        const int w = targetIndexIt->second;
+        if(index[w] == -1) {
+          strongConnect(w);
+          if(lowlink[w] < lowlink[v]) {
+            lowlink[v] = lowlink[w];
+          }
+        } else if(onStack[w] && index[w] < lowlink[v]) {
+          lowlink[v] = index[w];
+        }
+      }
+    }
+
+    if(lowlink[v] == index[v]) {
+      std::vector<int> component;
+      while(!stack.empty()) {
+        const int w = stack.back();
+        stack.pop_back();
+        onStack[w] = false;
+        component.push_back(w);
+        if(w == v) {
+          break;
+        }
+      }
+
+      bool recursiveComponent = component.size() > 1;
+      if(!recursiveComponent && !component.empty()) {
+        std::unordered_map<uint32_t, std::unordered_set<uint32_t> >::const_iterator selfIt = functionCalls.find(functions[component[0]]);
+        recursiveComponent = selfIt != functionCalls.end() && selfIt->second.find(functions[component[0]]) != selfIt->second.end();
+      }
+
+      const int groupId = recursiveComponent && component.size() > 1 ? nextGroup++ : 0;
+      for(size_t i = 0; i < component.size(); ++i) {
+        RomFunctionInfo info = {};
+        info.entry = functions[component[i]];
+        info.recursive = recursiveComponent;
+        info.recursionGroup = groupId;
+        (*functionInfos)[info.entry] = info;
+      }
+    }
+  };
+
+  for(size_t i = 0; i < functions.size(); ++i) {
+    if(index[i] == -1) {
+      strongConnect((int)i);
+    }
+  }
+}
+
 static void rom_disasm_enqueueSyntheticSuccessor(
   size_t from,
   const char* edgeLabel,
@@ -420,6 +514,17 @@ static void rom_disasm_escapeDot(FILE* out, const char* text) {
   }
 }
 
+static void rom_disasm_writeFunctionLabel(FILE* out, uint32_t entry, const RomFunctionInfo* info) {
+  fprintf(out, "%06x", entry & 0xffffff);
+  if(info != NULL && info->recursive) {
+    if(info->recursionGroup > 0) {
+      fprintf(out, "\\nmutually-recursive group %d", info->recursionGroup);
+    } else {
+      fprintf(out, "\\nrecursive");
+    }
+  }
+}
+
 static void rom_disasm_reportProgress(
   const RomDisassemblyControl* control,
   size_t nodes,
@@ -546,6 +651,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   std::vector<RomAnalysisEdge> edges;
   std::unordered_set<std::string> edgeSet;
   std::unordered_map<std::string, size_t> syntheticLookup;
+  std::unordered_map<uint32_t, std::unordered_set<uint32_t> > functionCalls;
   size_t unresolvedIndirectJumpCount = 0;
   size_t unresolvedIndirectCallCount = 0;
   size_t unresolvedReturnCount = 0;
@@ -588,6 +694,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     const size_t nodeIndex = worklist[cursor];
     const RomAnalysisNode& node = nodes[nodeIndex];
     const RomAnalysisState nextState = rom_disasm_advanceState(node.state, node.info);
+    const uint32_t currentFunctionEntry = rom_disasm_currentFunctionEntry(node.state);
 
     switch(node.info.opcode) {
       case 0x10:
@@ -619,6 +726,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
       case 0x20: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_absoluteTarget(node.info);
+        functionCalls[currentFunctionEntry].insert(callState.address & 0xffffff);
         const bool directRecursion =
           !node.state.callTargetStack.empty() &&
           ((node.state.callTargetStack.back() & 0xffffff) == (callState.address & 0xffffff));
@@ -644,6 +752,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
       case 0x22: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_longTarget(node.info);
+        functionCalls[currentFunctionEntry].insert(callState.address & 0xffffff);
         const bool directRecursion =
           !node.state.callTargetStack.empty() &&
           ((node.state.callTargetStack.back() & 0xffffff) == (callState.address & 0xffffff));
@@ -803,12 +912,32 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     true
   );
 
+  std::unordered_map<uint32_t, RomFunctionInfo> functionInfos;
+  rom_disasm_collectFunctionInfos(functionCalls, &functionInfos);
+  size_t recursiveFunctionCount = 0;
+  size_t mutualRecursiveFunctionCount = 0;
+  size_t recursionGroupCount = 0;
+  std::unordered_set<int> seenGroups;
+  for(std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator it = functionInfos.begin(); it != functionInfos.end(); ++it) {
+    if(it->second.recursive) {
+      recursiveFunctionCount++;
+      if(it->second.recursionGroup > 0) {
+        mutualRecursiveFunctionCount++;
+        seenGroups.insert(it->second.recursionGroup);
+      }
+    }
+  }
+  recursionGroupCount = seenGroups.size();
+
   fprintf(out, "digraph rom_cfg {\n");
   fprintf(out, "  // nodes: %zu\n", nodes.size());
   fprintf(out, "  // edges: %zu\n", edges.size());
   fprintf(out, "  // unresolved indirect jumps: %zu\n", unresolvedIndirectJumpCount);
   fprintf(out, "  // unresolved indirect calls: %zu\n", unresolvedIndirectCallCount);
   fprintf(out, "  // unresolved returns: %zu\n", unresolvedReturnCount);
+  fprintf(out, "  // recursive functions: %zu\n", recursiveFunctionCount);
+  fprintf(out, "  // mutually recursive functions: %zu\n", mutualRecursiveFunctionCount);
+  fprintf(out, "  // mutually recursive groups: %zu\n", recursionGroupCount);
   fprintf(out, "  // recursive calls cut off: %zu\n", recursiveCallCount);
   fprintf(out, "  // mutually recursive calls cut off: %zu\n", mutualRecursiveCallCount);
   fprintf(out, "  // max call depth cut off: %zu\n", maxCallDepthCount);
@@ -837,6 +966,15 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
       }
       fprintf(out, "\\n");
       rom_disasm_escapeDot(out, nodes[i].info.formatted);
+      const uint32_t functionEntry = rom_disasm_currentFunctionEntry(nodes[i].state);
+      std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator functionIt = functionInfos.find(functionEntry);
+      if(functionIt != functionInfos.end() && functionIt->second.recursive) {
+        if(functionIt->second.recursionGroup > 0) {
+          fprintf(out, "\\nfunc %06x mutually-recursive group %d", functionEntry, functionIt->second.recursionGroup);
+        } else {
+          fprintf(out, "\\nfunc %06x recursive", functionEntry);
+        }
+      }
       fprintf(out, "\"];\n");
     }
   }
@@ -844,6 +982,46 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   for(size_t i = 0; i < edges.size(); ++i) {
     fprintf(out, "  n%zu -> n%zu [label=\"%s\"];\n", edges[i].from, edges[i].to, edges[i].label);
   }
+
+  fprintf(out, "  subgraph cluster_function_call_graph {\n");
+  fprintf(out, "    label=\"Function Call Graph\";\n");
+  fprintf(out, "    color=gray50;\n");
+  fprintf(out, "    style=dashed;\n");
+
+  for(std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator it = functionInfos.begin(); it != functionInfos.end(); ++it) {
+    fprintf(out, "    f_%06x [shape=ellipse, label=\"", it->first & 0xffffff);
+    rom_disasm_writeFunctionLabel(out, it->first, &it->second);
+    if(it->second.recursionGroup > 0) {
+      fprintf(out, "\", color=firebrick, fontcolor=firebrick];\n");
+    } else if(it->second.recursive) {
+      fprintf(out, "\", color=darkorange3, fontcolor=darkorange3];\n");
+    } else {
+      fprintf(out, "\"];\n");
+    }
+  }
+
+  for(std::unordered_map<uint32_t, std::unordered_set<uint32_t> >::const_iterator it = functionCalls.begin(); it != functionCalls.end(); ++it) {
+    for(std::unordered_set<uint32_t>::const_iterator targetIt = it->second.begin(); targetIt != it->second.end(); ++targetIt) {
+      const uint32_t fromEntry = it->first & 0xffffff;
+      const uint32_t toEntry = *targetIt & 0xffffff;
+      std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator fromInfoIt = functionInfos.find(fromEntry);
+      std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator toInfoIt = functionInfos.find(toEntry);
+      const RomFunctionInfo* fromInfo = fromInfoIt != functionInfos.end() ? &fromInfoIt->second : NULL;
+      const RomFunctionInfo* toInfo = toInfoIt != functionInfos.end() ? &toInfoIt->second : NULL;
+      const bool sameRecursiveGroup =
+        fromInfo != NULL &&
+        toInfo != NULL &&
+        fromInfo->recursionGroup > 0 &&
+        fromInfo->recursionGroup == toInfo->recursionGroup;
+      if(sameRecursiveGroup) {
+        fprintf(out, "    f_%06x -> f_%06x [color=firebrick, penwidth=2];\n", fromEntry, toEntry);
+      } else {
+        fprintf(out, "    f_%06x -> f_%06x;\n", fromEntry, toEntry);
+      }
+    }
+  }
+
+  fprintf(out, "  }\n");
 
   fprintf(out, "}\n");
   return true;
