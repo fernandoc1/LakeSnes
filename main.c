@@ -662,8 +662,12 @@ static void printCfgProgress(void* userData, const RomDisassemblyProgress* progr
 
   fprintf(
     stderr,
-    "CFG status: nodes=%zu edges=%zu processed=%zu queued=%zu unresolved_jumps=%zu unresolved_calls=%zu unresolved_returns=%zu recursive_cutoff=%zu mutual_cutoff=%zu depth_cutoff=%zu context_cutoff=%zu%s%s\n",
+    "CFG status: nodes=%zu unique_instr=%zu funcs=%zu code_bytes=%zu coverage=%.4f%% edges=%zu processed=%zu queued=%zu unresolved_jumps=%zu unresolved_calls=%zu unresolved_returns=%zu recursive_cutoff=%zu mutual_cutoff=%zu depth_cutoff=%zu context_cutoff=%zu%s%s\n",
     progress->nodes,
+    progress->uniqueInstructionAddresses,
+    progress->discoveredFunctions,
+    progress->reachableRomBytes,
+    progress->romCoveragePercent,
     progress->edges,
     progress->processedNodes,
     progress->queuedNodes,

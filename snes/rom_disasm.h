@@ -17,6 +17,10 @@ typedef struct RomDisassemblyProgress {
   size_t mutualRecursiveCallsCutOff;
   size_t maxCallDepthCutOff;
   size_t contextLimitCutOff;
+  size_t uniqueInstructionAddresses;
+  size_t discoveredFunctions;
+  size_t reachableRomBytes;
+  double romCoveragePercent;
   size_t processedNodes;
   size_t queuedNodes;
   int instructionLimit;

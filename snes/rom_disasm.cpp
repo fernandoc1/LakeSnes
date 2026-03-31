@@ -536,6 +536,10 @@ static void rom_disasm_reportProgress(
   size_t mutualRecursiveCallCount,
   size_t maxCallDepthCount,
   size_t contextLimitCount,
+  size_t uniqueInstructionAddresses,
+  size_t discoveredFunctions,
+  size_t reachableRomBytes,
+  double romCoveragePercent,
   size_t processedNodes,
   size_t queuedNodes,
   int instructionLimit,
@@ -557,6 +561,10 @@ static void rom_disasm_reportProgress(
   progress.mutualRecursiveCallsCutOff = mutualRecursiveCallCount;
   progress.maxCallDepthCutOff = maxCallDepthCount;
   progress.contextLimitCutOff = contextLimitCount;
+  progress.uniqueInstructionAddresses = uniqueInstructionAddresses;
+  progress.discoveredFunctions = discoveredFunctions;
+  progress.reachableRomBytes = reachableRomBytes;
+  progress.romCoveragePercent = romCoveragePercent;
   progress.processedNodes = processedNodes;
   progress.queuedNodes = queuedNodes;
   progress.instructionLimit = instructionLimit;
@@ -660,6 +668,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   std::unordered_set<std::string> edgeSet;
   std::unordered_map<std::string, size_t> syntheticLookup;
   std::unordered_map<uint32_t, std::unordered_set<uint32_t> > functionCalls;
+  std::unordered_set<uint32_t> uniqueInstructionAddresses;
   size_t unresolvedIndirectJumpCount = 0;
   size_t unresolvedIndirectCallCount = 0;
   size_t unresolvedReturnCount = 0;
@@ -693,6 +702,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
         mutualRecursiveCallCount,
         maxCallDepthCount,
         contextLimitCount,
+        uniqueInstructionAddresses.size(),
+        functionCalls.size(),
+        0,
+        0.0,
         processedNodeCount,
         worklist.size(),
         instructionLimit,
@@ -707,6 +720,7 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     const RomAnalysisNode& node = nodes[nodeIndex];
     const RomAnalysisState nextState = rom_disasm_advanceState(node.state, node.info);
     const uint32_t currentFunctionEntry = rom_disasm_currentFunctionEntry(node.state);
+    uniqueInstructionAddresses.insert(node.info.address & 0xffffff);
 
     switch(node.info.opcode) {
       case 0x10:
@@ -899,6 +913,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
         mutualRecursiveCallCount,
         maxCallDepthCount,
         contextLimitCount,
+        uniqueInstructionAddresses.size(),
+        functionCalls.size(),
+        0,
+        0.0,
         processedNodeCount,
         worklist.size(),
         instructionLimit,
@@ -913,30 +931,12 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     }
   }
 
-  rom_disasm_reportProgress(
-    control,
-    nodes.size(),
-    edges.size(),
-    unresolvedIndirectJumpCount,
-    unresolvedIndirectCallCount,
-    unresolvedReturnCount,
-    recursiveCallCount,
-    mutualRecursiveCallCount,
-    maxCallDepthCount,
-    contextLimitCount,
-    processedNodeCount,
-    worklist.size(),
-    instructionLimit,
-    hitNodeLimit,
-    stopRequested,
-    true
-  );
-
   std::unordered_map<uint32_t, RomFunctionInfo> functionInfos;
   rom_disasm_collectFunctionInfos(functionCalls, &functionInfos);
   size_t recursiveFunctionCount = 0;
   size_t mutualRecursiveFunctionCount = 0;
   size_t recursionGroupCount = 0;
+  std::unordered_set<uint32_t> reachableRomOffsets;
   std::unordered_set<int> seenGroups;
   for(std::unordered_map<uint32_t, RomFunctionInfo>::const_iterator it = functionInfos.begin(); it != functionInfos.end(); ++it) {
     if(it->second.recursive) {
@@ -948,6 +948,41 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     }
   }
   recursionGroupCount = seenGroups.size();
+  for(size_t i = 0; i < nodes.size(); ++i) {
+    if(!nodes[i].synthetic && nodes[i].hasFileOffset) {
+      for(uint8_t j = 0; j < nodes[i].info.size; ++j) {
+        reachableRomOffsets.insert((nodes[i].fileOffset + j) & 0xffffff);
+      }
+    }
+  }
+  const size_t reachableRomBytes = reachableRomOffsets.size();
+  const double romCoveragePercent =
+    (snes->cart != NULL && snes->cart->romSize > 0)
+      ? (100.0 * reachableRomBytes) / (double)snes->cart->romSize
+      : 0.0;
+
+  rom_disasm_reportProgress(
+    control,
+    nodes.size(),
+    edges.size(),
+    unresolvedIndirectJumpCount,
+    unresolvedIndirectCallCount,
+    unresolvedReturnCount,
+    recursiveCallCount,
+    mutualRecursiveCallCount,
+    maxCallDepthCount,
+    contextLimitCount,
+    uniqueInstructionAddresses.size(),
+    functionInfos.size(),
+    reachableRomBytes,
+    romCoveragePercent,
+    processedNodeCount,
+    worklist.size(),
+    instructionLimit,
+    hitNodeLimit,
+    stopRequested,
+    true
+  );
 
   fprintf(out, "digraph rom_cfg {\n");
   fprintf(out, "  // nodes: %zu\n", nodes.size());
@@ -962,6 +997,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   fprintf(out, "  // mutually recursive calls cut off: %zu\n", mutualRecursiveCallCount);
   fprintf(out, "  // max call depth cut off: %zu\n", maxCallDepthCount);
   fprintf(out, "  // context limit cut off: %zu\n", contextLimitCount);
+  fprintf(out, "  // unique instruction addresses: %zu\n", uniqueInstructionAddresses.size());
+  fprintf(out, "  // discovered functions: %zu\n", functionInfos.size());
+  fprintf(out, "  // reachable ROM bytes: %zu\n", reachableRomBytes);
+  fprintf(out, "  // ROM coverage: %.4f%%\n", romCoveragePercent);
   if(instructionLimit == 0) {
     fprintf(out, "  // limit: none\n");
   } else {
