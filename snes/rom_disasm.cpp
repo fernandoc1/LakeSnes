@@ -16,7 +16,7 @@ struct RomAnalysisState {
   bool xf;
   bool c;
   bool cKnown;
-  std::vector<uint32_t> returnStack;
+  std::vector<uint64_t> returnStack;
 };
 
 struct RomAnalysisNode {
@@ -55,12 +55,26 @@ static std::string rom_disasm_stateKey(const RomAnalysisState& state) {
   );
 
   std::string key = header;
-  char entry[16];
+  char entry[32];
   for(size_t i = 0; i < state.returnStack.size(); ++i) {
-    snprintf(entry, sizeof(entry), ":%06x", state.returnStack[i] & 0xffffff);
+    const uint32_t returnAddress = state.returnStack[i] & 0xffffff;
+    const uint32_t callAddress = (state.returnStack[i] >> 24) & 0xffffff;
+    snprintf(entry, sizeof(entry), ":%06x>%06x", callAddress, returnAddress);
     key += entry;
   }
   return key;
+}
+
+static uint64_t rom_disasm_makeReturnFrame(uint32_t callAddress, uint32_t returnAddress) {
+  return ((uint64_t)(callAddress & 0xffffff) << 24) | (uint64_t)(returnAddress & 0xffffff);
+}
+
+static uint32_t rom_disasm_getReturnAddress(uint64_t frame) {
+  return frame & 0xffffff;
+}
+
+static uint32_t rom_disasm_getCallAddress(uint64_t frame) {
+  return (frame >> 24) & 0xffffff;
 }
 
 static bool rom_disasm_isRomAddress(const Snes* snes, uint32_t address) {
@@ -267,6 +281,26 @@ static void rom_disasm_enqueueSyntheticSuccessor(
   rom_disasm_addEdge(from, to, edgeLabel, edges, edgeSet);
 }
 
+static void rom_disasm_enqueueCallsiteEdge(
+  uint32_t address,
+  size_t from,
+  const char* label,
+  const std::string& fallbackLabel,
+  std::vector<RomAnalysisNode>* nodes,
+  std::unordered_map<std::string, size_t>* syntheticLookup,
+  std::vector<RomAnalysisEdge>* edges,
+  std::unordered_set<std::string>* edgeSet
+) {
+  for(size_t i = 0; i < nodes->size(); ++i) {
+    if(!(*nodes)[i].synthetic && (((*nodes)[i].info.address & 0xffffff) == (address & 0xffffff))) {
+      rom_disasm_addEdge(from, i, label, edges, edgeSet);
+      return;
+    }
+  }
+
+  rom_disasm_enqueueSyntheticSuccessor(from, label, fallbackLabel, nodes, syntheticLookup, edges, edgeSet);
+}
+
 static void rom_disasm_escapeDot(FILE* out, const char* text) {
   for(const char* p = text; *p != '\0'; ++p) {
     switch(*p) {
@@ -419,7 +453,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x20: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_absoluteTarget(node.info);
-        callState.returnStack.push_back(nextState.address);
+        callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
         rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
@@ -427,7 +461,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x22: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_longTarget(node.info);
-        callState.returnStack.push_back(nextState.address);
+        callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
         rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
@@ -478,9 +512,22 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0xdb:
         if((node.info.opcode == 0x60 || node.info.opcode == 0x6b) && !node.state.returnStack.empty()) {
           RomAnalysisState returnState = node.state;
-          returnState.address = returnState.returnStack.back();
+          const uint64_t frame = returnState.returnStack.back();
+          const uint32_t returnAddress = rom_disasm_getReturnAddress(frame);
+          const uint32_t callAddress = rom_disasm_getCallAddress(frame);
+          returnState.address = returnAddress;
           returnState.returnStack.pop_back();
           rom_disasm_enqueueSuccessor(snes, returnState, nodeIndex, "return", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+          rom_disasm_enqueueCallsiteEdge(
+            callAddress,
+            nodeIndex,
+            "return-callsite",
+            std::string("callsite ") + node.info.formatted,
+            &nodes,
+            &syntheticLookup,
+            &edges,
+            &edgeSet
+          );
         } else if(node.info.opcode == 0x60 || node.info.opcode == 0x6b) {
           rom_disasm_enqueueSyntheticSuccessor(
             nodeIndex,
