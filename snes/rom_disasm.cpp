@@ -240,7 +240,7 @@ static size_t rom_disasm_getOrCreateNode(
   if(it != nodeLookup->end()) {
     return it->second;
   }
-  if((int)nodes->size() >= instructionLimit) {
+  if(instructionLimit > 0 && (int)nodes->size() >= instructionLimit) {
     return (size_t)-1;
   }
 
@@ -439,7 +439,7 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
 }
 
 bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
-  if(snes == NULL || out == NULL || instructionLimit <= 0) {
+  if(snes == NULL || out == NULL || instructionLimit < 0) {
     return false;
   }
 
@@ -457,6 +457,10 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   std::vector<RomAnalysisEdge> edges;
   std::unordered_set<std::string> edgeSet;
   std::unordered_map<std::string, size_t> syntheticLookup;
+  size_t unresolvedIndirectJumpCount = 0;
+  size_t unresolvedIndirectCallCount = 0;
+  size_t unresolvedReturnCount = 0;
+  bool hitNodeLimit = false;
 
   if(!rom_disasm_isRomAddress(snes, initialState.address)) {
     return false;
@@ -526,6 +530,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
         break;
       }
       case 0xfc:
+        unresolvedIndirectCallCount++;
         rom_disasm_enqueueSyntheticSuccessor(
           nodeIndex,
           "indirect-call",
@@ -540,6 +545,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x6c:
       case 0x7c:
       case 0xdc:
+        unresolvedIndirectJumpCount++;
         rom_disasm_enqueueSyntheticSuccessor(
           nodeIndex,
           "indirect-jump",
@@ -576,6 +582,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
             &edgeSet
           );
         } else if(node.info.opcode == 0x60 || node.info.opcode == 0x6b) {
+          unresolvedReturnCount++;
           rom_disasm_enqueueSyntheticSuccessor(
             nodeIndex,
             "return",
@@ -591,9 +598,24 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
     }
+
+    if(instructionLimit > 0 && nodes.size() >= (size_t)instructionLimit) {
+      hitNodeLimit = true;
+    }
   }
 
   fprintf(out, "digraph rom_cfg {\n");
+  fprintf(out, "  // nodes: %zu\n", nodes.size());
+  fprintf(out, "  // edges: %zu\n", edges.size());
+  fprintf(out, "  // unresolved indirect jumps: %zu\n", unresolvedIndirectJumpCount);
+  fprintf(out, "  // unresolved indirect calls: %zu\n", unresolvedIndirectCallCount);
+  fprintf(out, "  // unresolved returns: %zu\n", unresolvedReturnCount);
+  if(instructionLimit == 0) {
+    fprintf(out, "  // limit: none\n");
+  } else {
+    fprintf(out, "  // limit: %d\n", instructionLimit);
+  }
+  fprintf(out, "  // traversal: %s\n", hitNodeLimit ? "stopped at limit" : "worklist exhausted");
   fprintf(out, "  node [shape=box];\n");
 
   for(size_t i = 0; i < nodes.size(); ++i) {

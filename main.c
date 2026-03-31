@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
         return 1;
       }
       disasmInstructionLimit = atoi(argv[++i]);
-      if(disasmInstructionLimit <= 0) {
+      if(disasmInstructionLimit < 0) {
         fprintf(stderr, "Invalid --cfg-limit value\n");
         return 1;
       }
