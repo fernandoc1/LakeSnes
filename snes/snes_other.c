@@ -48,6 +48,8 @@ typedef struct CartHeader {
 static void readHeader(const uint8_t* data, int length, int location, CartHeader* header);
 
 bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
+  const int originalLength = length;
+  int headerSize = 0;
   // if smaller than smallest possible, don't load
   if(length < 0x8000) {
     printf("Failed to load rom: rom to small (%d bytes)\n", length);
@@ -76,6 +78,7 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
   }
   if(used & 1) {
     // odd-numbered ones are for headered roms
+    headerSize = 0x200;
     data += 0x200; // move pointer past header
     length -= 0x200; // and subtract from size
   }
@@ -117,6 +120,8 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
   );
   snes_reset(snes, true); // reset after loading
   snes->palTiming = headers[used].pal; // set region
+  snes->romFileSize = originalLength;
+  snes->romFileHeaderSize = headerSize;
   free(newData);
   return true;
 }

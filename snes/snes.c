@@ -36,6 +36,8 @@ Snes* snes_init(void) {
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
   snes->palTiming = false;
+  snes->romFileSize = 0;
+  snes->romFileHeaderSize = 0;
   return snes;
 }
 

@@ -61,6 +61,8 @@ struct Snes {
   // misc
   bool fastMem;
   uint8_t openBus;
+  uint32_t romFileSize;
+  uint32_t romFileHeaderSize;
 };
 
 Snes* snes_init(void);

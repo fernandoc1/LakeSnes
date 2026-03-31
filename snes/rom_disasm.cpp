@@ -22,6 +22,8 @@ struct RomAnalysisState {
 struct RomAnalysisNode {
   RomAnalysisState state;
   CpuInstructionInfo info;
+  bool hasFileOffset;
+  uint32_t fileOffset;
   bool synthetic;
   std::string syntheticLabel;
 };
@@ -95,6 +97,50 @@ static bool rom_disasm_isRomAddress(const Snes* snes, uint32_t address) {
     default:
       return false;
   }
+}
+
+static bool rom_disasm_getFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOffset) {
+  if(snes == NULL || snes->cart == NULL || fileOffset == NULL) {
+    return false;
+  }
+
+  uint32_t romOffset = 0;
+
+  const uint8_t bank = (address >> 16) & 0xff;
+  const uint16_t adr = address & 0xffff;
+
+  switch(snes->cart->type) {
+    case 1: {
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = ((bankMasked << 15) | (adr & 0x7fff)) & (snes->cart->romSize - 1);
+      break;
+    }
+    case 2: {
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = (((bankMasked & 0x3f) << 16) | adr) & (snes->cart->romSize - 1);
+      break;
+    }
+    case 3: {
+      const bool secondHalf = bank < 0x80;
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = (((bankMasked & 0x3f) << 16) | (secondHalf ? 0x400000 : 0) | adr) & (snes->cart->romSize - 1);
+      break;
+    }
+    default:
+      return false;
+  }
+
+  *fileOffset = romOffset + snes->romFileHeaderSize;
+  return true;
 }
 
 static void rom_disasm_readInstruction(
@@ -201,6 +247,7 @@ static size_t rom_disasm_getOrCreateNode(
   RomAnalysisNode node = {};
   node.state = state;
   rom_disasm_readInstruction(snes, state, &node.info);
+  node.hasFileOffset = rom_disasm_getFileOffset(snes, state.address, &node.fileOffset);
   node.synthetic = false;
   const size_t index = nodes->size();
   nodes->push_back(node);
@@ -555,7 +602,11 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       rom_disasm_escapeDot(out, nodes[i].syntheticLabel.c_str());
       fprintf(out, "\", style=dashed];\n");
     } else {
-      fprintf(out, "  n%zu [label=\"%06x\\n", i, nodes[i].info.address & 0xffffff);
+      fprintf(out, "  n%zu [label=\"%06x", i, nodes[i].info.address & 0xffffff);
+      if(nodes[i].hasFileOffset) {
+        fprintf(out, " [file@%06x]", nodes[i].fileOffset & 0xffffff);
+      }
+      fprintf(out, "\\n");
       rom_disasm_escapeDot(out, nodes[i].info.formatted);
       fprintf(out, "\"];\n");
     }
