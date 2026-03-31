@@ -84,15 +84,17 @@ static void renderScreen(void);
 static void handleInput(int keyCode, bool pressed);
 static bool saveTraceFile(bool verbose);
 static void beginTraceRecording(bool fromStartup);
-static int runRomDisassembly(const char* romPath, int instructionLimit);
+static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath);
 static bool loadCoprocessorLibrary(const char* path);
 static void unloadCoprocessorLibrary(void);
 
 int main(int argc, char** argv) {
   bool disasmRomMode = false;
+  bool cfgRomMode = false;
   int disasmInstructionLimit = 4096;
   const char* romPath = NULL;
   const char* copLibPath = NULL;
+  const char* cfgOutputPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
@@ -105,6 +107,8 @@ int main(int argc, char** argv) {
       copLibPath = argv[++i];
     } else if(strcmp(argv[i], "--disasm-rom") == 0) {
       disasmRomMode = true;
+    } else if(strcmp(argv[i], "--cfg-rom") == 0) {
+      cfgRomMode = true;
     } else if(strcmp(argv[i], "--disasm-limit") == 0) {
       if(i + 1 >= argc) {
         fprintf(stderr, "Missing value for --disasm-limit\n");
@@ -115,6 +119,22 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Invalid --disasm-limit value\n");
         return 1;
       }
+    } else if(strcmp(argv[i], "--cfg-limit") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --cfg-limit\n");
+        return 1;
+      }
+      disasmInstructionLimit = atoi(argv[++i]);
+      if(disasmInstructionLimit <= 0) {
+        fprintf(stderr, "Invalid --cfg-limit value\n");
+        return 1;
+      }
+    } else if(strcmp(argv[i], "--cfg-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --cfg-out\n");
+        return 1;
+      }
+      cfgOutputPath = argv[++i];
     } else if(romPath == NULL) {
       romPath = argv[i];
     } else {
@@ -123,12 +143,25 @@ int main(int argc, char** argv) {
     }
   }
 
+  if(disasmRomMode && cfgRomMode) {
+    fprintf(stderr, "Choose either --disasm-rom or --cfg-rom\n");
+    return 1;
+  }
+
   if(disasmRomMode) {
     if(romPath == NULL) {
       fprintf(stderr, "Usage: %s --disasm-rom [--disasm-limit N] <rom>\n", argv[0]);
       return 1;
     }
-    return runRomDisassembly(romPath, disasmInstructionLimit);
+    return runRomDisassembly(romPath, disasmInstructionLimit, false, NULL);
+  }
+
+  if(cfgRomMode) {
+    if(romPath == NULL || cfgOutputPath == NULL) {
+      fprintf(stderr, "Usage: %s --cfg-rom --cfg-out <file.dot> [--cfg-limit N] <rom>\n", argv[0]);
+      return 1;
+    }
+    return runRomDisassembly(romPath, disasmInstructionLimit, true, cfgOutputPath);
   }
 
   if(getenv("LAKESNES_DEBUG") != NULL) {
@@ -529,7 +562,7 @@ static void loadRom(const char* path) {
   free(file);
 }
 
-static int runRomDisassembly(const char* romPath, int instructionLimit) {
+static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath) {
   int length = 0;
   uint8_t* file = readRomImage(romPath, &length);
   if(file == NULL) {
@@ -539,12 +572,28 @@ static int runRomDisassembly(const char* romPath, int instructionLimit) {
 
   Snes* snes = snes_init();
   int result = 0;
+  FILE* out = stdout;
   if(!snes_loadRom(snes, file, length)) {
     fprintf(stderr, "Failed to load ROM '%s'\n", romPath);
     result = 1;
-  } else if(!rom_disassemble(snes, stdout, instructionLimit)) {
-    fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
-    result = 1;
+  } else {
+    if(cfgMode) {
+      out = fopen(outputPath, "w");
+      if(out == NULL) {
+        fprintf(stderr, "Failed to open CFG output '%s'\n", outputPath);
+        result = 1;
+      } else if(!rom_disassemble_cfg(snes, out, instructionLimit)) {
+        fprintf(stderr, "Failed to build CFG for ROM '%s'\n", romPath);
+        result = 1;
+      }
+    } else if(!rom_disassemble(snes, out, instructionLimit)) {
+      fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
+      result = 1;
+    }
+  }
+
+  if(out != NULL && out != stdout) {
+    fclose(out);
   }
 
   snes_free(snes);
