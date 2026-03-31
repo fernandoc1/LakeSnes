@@ -582,9 +582,8 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
   FILE* out = stdout;
   bool signalHandlersInstalled = false;
 #ifndef _WIN32
-  struct sigaction oldSigInt = {};
-  struct sigaction oldSigTerm = {};
   struct sigaction oldSigUsr1 = {};
+  struct sigaction oldSigUsr2 = {};
 #endif
   if(!snes_loadRom(snes, file, length)) {
     fprintf(stderr, "Failed to load ROM '%s'\n", romPath);
@@ -606,11 +605,10 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
         struct sigaction statusAction = {};
         statusAction.sa_handler = handleCfgStatusSignal;
         sigemptyset(&statusAction.sa_mask);
-        sigaction(SIGINT, &stopAction, &oldSigInt);
-        sigaction(SIGTERM, &stopAction, &oldSigTerm);
         sigaction(SIGUSR1, &statusAction, &oldSigUsr1);
+        sigaction(SIGUSR2, &stopAction, &oldSigUsr2);
         signalHandlersInstalled = true;
-        fprintf(stderr, "CFG export running. Send SIGUSR1 for status, SIGINT or SIGTERM to stop cleanly.\n");
+        fprintf(stderr, "CFG export running. Send SIGUSR1 for status, SIGUSR2 to stop cleanly.\n");
 #endif
         control.stopRequested = &g_cfgStopRequested;
         control.statusRequested = &g_cfgStatusRequested;
@@ -630,9 +628,8 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
 
 #ifndef _WIN32
   if(signalHandlersInstalled) {
-    sigaction(SIGINT, &oldSigInt, NULL);
-    sigaction(SIGTERM, &oldSigTerm, NULL);
     sigaction(SIGUSR1, &oldSigUsr1, NULL);
+    sigaction(SIGUSR2, &oldSigUsr2, NULL);
   }
 #endif
 
