@@ -532,6 +532,10 @@ static void rom_disasm_reportProgress(
   size_t unresolvedIndirectJumpCount,
   size_t unresolvedIndirectCallCount,
   size_t unresolvedReturnCount,
+  size_t recursiveCallCount,
+  size_t mutualRecursiveCallCount,
+  size_t maxCallDepthCount,
+  size_t contextLimitCount,
   size_t processedNodes,
   size_t queuedNodes,
   int instructionLimit,
@@ -549,6 +553,10 @@ static void rom_disasm_reportProgress(
   progress.unresolvedIndirectJumps = unresolvedIndirectJumpCount;
   progress.unresolvedIndirectCalls = unresolvedIndirectCallCount;
   progress.unresolvedReturns = unresolvedReturnCount;
+  progress.recursiveCallsCutOff = recursiveCallCount;
+  progress.mutualRecursiveCallsCutOff = mutualRecursiveCallCount;
+  progress.maxCallDepthCutOff = maxCallDepthCount;
+  progress.contextLimitCutOff = contextLimitCount;
   progress.processedNodes = processedNodes;
   progress.queuedNodes = queuedNodes;
   progress.instructionLimit = instructionLimit;
@@ -681,6 +689,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
         unresolvedIndirectJumpCount,
         unresolvedIndirectCallCount,
         unresolvedReturnCount,
+        recursiveCallCount,
+        mutualRecursiveCallCount,
+        maxCallDepthCount,
+        contextLimitCount,
         processedNodeCount,
         worklist.size(),
         instructionLimit,
@@ -883,6 +895,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
         unresolvedIndirectJumpCount,
         unresolvedIndirectCallCount,
         unresolvedReturnCount,
+        recursiveCallCount,
+        mutualRecursiveCallCount,
+        maxCallDepthCount,
+        contextLimitCount,
         processedNodeCount,
         worklist.size(),
         instructionLimit,
@@ -904,6 +920,10 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
     unresolvedIndirectJumpCount,
     unresolvedIndirectCallCount,
     unresolvedReturnCount,
+    recursiveCallCount,
+    mutualRecursiveCallCount,
+    maxCallDepthCount,
+    contextLimitCount,
     processedNodeCount,
     worklist.size(),
     instructionLimit,

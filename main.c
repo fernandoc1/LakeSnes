@@ -577,7 +577,9 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
     return 1;
   }
 
+  cpu_setMemViewerEnabled(false);
   Snes* snes = snes_init();
+  cpu_setMemViewerEnabled(true);
   int result = 0;
   FILE* out = stdout;
   bool signalHandlersInstalled = false;
@@ -660,7 +662,7 @@ static void printCfgProgress(void* userData, const RomDisassemblyProgress* progr
 
   fprintf(
     stderr,
-    "CFG status: nodes=%zu edges=%zu processed=%zu queued=%zu unresolved_jumps=%zu unresolved_calls=%zu unresolved_returns=%zu%s%s\n",
+    "CFG status: nodes=%zu edges=%zu processed=%zu queued=%zu unresolved_jumps=%zu unresolved_calls=%zu unresolved_returns=%zu recursive_cutoff=%zu mutual_cutoff=%zu depth_cutoff=%zu context_cutoff=%zu%s%s\n",
     progress->nodes,
     progress->edges,
     progress->processedNodes,
@@ -668,6 +670,10 @@ static void printCfgProgress(void* userData, const RomDisassemblyProgress* progr
     progress->unresolvedIndirectJumps,
     progress->unresolvedIndirectCalls,
     progress->unresolvedReturns,
+    progress->recursiveCallsCutOff,
+    progress->mutualRecursiveCallsCutOff,
+    progress->maxCallDepthCutOff,
+    progress->contextLimitCutOff,
     progress->stopRequested ? " stop-requested" : "",
     progress->completed ? (progress->hitNodeLimit ? " stopped-at-limit" : (progress->stopRequested ? " stopped-by-signal" : " finished")) : ""
   );

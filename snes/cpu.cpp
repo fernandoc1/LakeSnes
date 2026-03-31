@@ -33,6 +33,7 @@ static uint16_t cpu_readWord(Cpu* cpu, uint32_t adrl, uint32_t adrh, bool intChe
 static void cpu_writeWord(Cpu* cpu, uint32_t adrl, uint32_t adrh, uint16_t value, bool reversed, bool intCheck);
 static void cpu_doInterrupt(Cpu* cpu);
 static void cpu_doOpcode(Cpu* cpu, uint8_t opcode);
+static bool g_cpuMemViewerEnabled = true;
 
 // addressing modes and opcode functions not declared, only used after defintions
 
@@ -81,7 +82,9 @@ Cpu::Cpu(Snes* snes, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler 
   memset(executionMap, 0, sizeof(executionMap));
   memset(tracedInstructionBytes, 0, sizeof(tracedInstructionBytes));
   //cpu->copViewer = mem_viewer_open(cpu->cop_mem, sizeof(cpu->cop_mem));
-  memViewer = mem_viewer_open(snes->ram, SNES_RAM_SIZE);
+  if(g_cpuMemViewerEnabled) {
+    memViewer = mem_viewer_open(snes->ram, SNES_RAM_SIZE);
+  }
   //executionMapViewer = mem_viewer_open(executionMap, sizeof(executionMap));
 }
 
@@ -230,6 +233,10 @@ void Cpu::setCoprocessorHook(CpuCoprocessorHook hook, void* userData) {
 
 void cpu_setCoprocessorHook(Cpu* cpu, CpuCoprocessorHook hook, void* userData) {
   cpu->setCoprocessorHook(hook, userData);
+}
+
+void cpu_setMemViewerEnabled(bool enabled) {
+  g_cpuMemViewerEnabled = enabled;
 }
 
 bool Cpu::runCoprocessorHook() {
