@@ -16,11 +16,14 @@ struct RomAnalysisState {
   bool xf;
   bool c;
   bool cKnown;
+  std::vector<uint32_t> returnStack;
 };
 
 struct RomAnalysisNode {
   RomAnalysisState state;
   CpuInstructionInfo info;
+  bool synthetic;
+  std::string syntheticLabel;
 };
 
 struct RomAnalysisEdge {
@@ -37,13 +40,26 @@ static void rom_disasm_format(const CpuInstructionInfo* info, FILE* out) {
   }
 }
 
-static uint64_t rom_disasm_stateKey(const RomAnalysisState& state) {
-  uint64_t key = state.address & 0xffffff;
-  key |= (uint64_t)state.e << 24;
-  key |= (uint64_t)state.mf << 25;
-  key |= (uint64_t)state.xf << 26;
-  key |= (uint64_t)state.c << 27;
-  key |= (uint64_t)state.cKnown << 28;
+static std::string rom_disasm_stateKey(const RomAnalysisState& state) {
+  char header[64];
+  snprintf(
+    header,
+    sizeof(header),
+    "%06x:%d:%d:%d:%d:%d",
+    state.address & 0xffffff,
+    state.e ? 1 : 0,
+    state.mf ? 1 : 0,
+    state.xf ? 1 : 0,
+    state.c ? 1 : 0,
+    state.cKnown ? 1 : 0
+  );
+
+  std::string key = header;
+  char entry[16];
+  for(size_t i = 0; i < state.returnStack.size(); ++i) {
+    snprintf(entry, sizeof(entry), ":%06x", state.returnStack[i] & 0xffffff);
+    key += entry;
+  }
   return key;
 }
 
@@ -156,11 +172,11 @@ static size_t rom_disasm_getOrCreateNode(
   const RomAnalysisState& state,
   int instructionLimit,
   std::vector<RomAnalysisNode>* nodes,
-  std::unordered_map<uint64_t, size_t>* nodeLookup,
+  std::unordered_map<std::string, size_t>* nodeLookup,
   std::vector<size_t>* worklist
 ) {
-  const uint64_t key = rom_disasm_stateKey(state);
-  std::unordered_map<uint64_t, size_t>::const_iterator it = nodeLookup->find(key);
+  const std::string key = rom_disasm_stateKey(state);
+  std::unordered_map<std::string, size_t>::const_iterator it = nodeLookup->find(key);
   if(it != nodeLookup->end()) {
     return it->second;
   }
@@ -171,10 +187,30 @@ static size_t rom_disasm_getOrCreateNode(
   RomAnalysisNode node = {};
   node.state = state;
   rom_disasm_readInstruction(snes, state, &node.info);
+  node.synthetic = false;
   const size_t index = nodes->size();
   nodes->push_back(node);
   (*nodeLookup)[key] = index;
   worklist->push_back(index);
+  return index;
+}
+
+static size_t rom_disasm_getOrCreateSyntheticNode(
+  const std::string& label,
+  std::vector<RomAnalysisNode>* nodes,
+  std::unordered_map<std::string, size_t>* syntheticLookup
+) {
+  std::unordered_map<std::string, size_t>::const_iterator it = syntheticLookup->find(label);
+  if(it != syntheticLookup->end()) {
+    return it->second;
+  }
+
+  RomAnalysisNode node = {};
+  node.synthetic = true;
+  node.syntheticLabel = label;
+  const size_t index = nodes->size();
+  nodes->push_back(node);
+  (*syntheticLookup)[label] = index;
   return index;
 }
 
@@ -205,7 +241,7 @@ static void rom_disasm_enqueueSuccessor(
   const char* label,
   int instructionLimit,
   std::vector<RomAnalysisNode>* nodes,
-  std::unordered_map<uint64_t, size_t>* nodeLookup,
+  std::unordered_map<std::string, size_t>* nodeLookup,
   std::vector<size_t>* worklist,
   std::vector<RomAnalysisEdge>* edges,
   std::unordered_set<std::string>* edgeSet
@@ -216,6 +252,19 @@ static void rom_disasm_enqueueSuccessor(
 
   const size_t to = rom_disasm_getOrCreateNode(snes, state, instructionLimit, nodes, nodeLookup, worklist);
   rom_disasm_addEdge(from, to, label, edges, edgeSet);
+}
+
+static void rom_disasm_enqueueSyntheticSuccessor(
+  size_t from,
+  const char* edgeLabel,
+  const std::string& nodeLabel,
+  std::vector<RomAnalysisNode>* nodes,
+  std::unordered_map<std::string, size_t>* syntheticLookup,
+  std::vector<RomAnalysisEdge>* edges,
+  std::unordered_set<std::string>* edgeSet
+) {
+  const size_t to = rom_disasm_getOrCreateSyntheticNode(nodeLabel, nodes, syntheticLookup);
+  rom_disasm_addEdge(from, to, edgeLabel, edges, edgeSet);
 }
 
 static void rom_disasm_escapeDot(FILE* out, const char* text) {
@@ -322,10 +371,11 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   initialState.cKnown = true;
 
   std::vector<RomAnalysisNode> nodes;
-  std::unordered_map<uint64_t, size_t> nodeLookup;
+  std::unordered_map<std::string, size_t> nodeLookup;
   std::vector<size_t> worklist;
   std::vector<RomAnalysisEdge> edges;
   std::unordered_set<std::string> edgeSet;
+  std::unordered_map<std::string, size_t> syntheticLookup;
 
   if(!rom_disasm_isRomAddress(snes, initialState.address)) {
     return false;
@@ -369,6 +419,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x20: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_absoluteTarget(node.info);
+        callState.returnStack.push_back(nextState.address);
         rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
@@ -376,6 +427,7 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x22: {
         RomAnalysisState callState = nextState;
         callState.address = rom_disasm_longTarget(node.info);
+        callState.returnStack.push_back(nextState.address);
         rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
@@ -393,11 +445,30 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
         break;
       }
       case 0xfc:
+        rom_disasm_enqueueSyntheticSuccessor(
+          nodeIndex,
+          "indirect-call",
+          std::string("unresolved indirect call\\n") + node.info.formatted,
+          &nodes,
+          &syntheticLookup,
+          &edges,
+          &edgeSet
+        );
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
         break;
       case 0x6c:
       case 0x7c:
       case 0xdc:
+        rom_disasm_enqueueSyntheticSuccessor(
+          nodeIndex,
+          "indirect-jump",
+          std::string("unresolved indirect jump\\n") + node.info.formatted,
+          &nodes,
+          &syntheticLookup,
+          &edges,
+          &edgeSet
+        );
+        break;
       case 0x00:
       case 0x02:
       case 0x40:
@@ -405,6 +476,22 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
       case 0x6b:
       case 0xcb:
       case 0xdb:
+        if((node.info.opcode == 0x60 || node.info.opcode == 0x6b) && !node.state.returnStack.empty()) {
+          RomAnalysisState returnState = node.state;
+          returnState.address = returnState.returnStack.back();
+          returnState.returnStack.pop_back();
+          rom_disasm_enqueueSuccessor(snes, returnState, nodeIndex, "return", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
+        } else if(node.info.opcode == 0x60 || node.info.opcode == 0x6b) {
+          rom_disasm_enqueueSyntheticSuccessor(
+            nodeIndex,
+            "return",
+            std::string("unresolved return\\n") + node.info.formatted,
+            &nodes,
+            &syntheticLookup,
+            &edges,
+            &edgeSet
+          );
+        }
         break;
       default:
         rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, &nodes, &nodeLookup, &worklist, &edges, &edgeSet);
@@ -416,9 +503,15 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   fprintf(out, "  node [shape=box];\n");
 
   for(size_t i = 0; i < nodes.size(); ++i) {
-    fprintf(out, "  n%zu [label=\"%06x\\n", i, nodes[i].info.address & 0xffffff);
-    rom_disasm_escapeDot(out, nodes[i].info.formatted);
-    fprintf(out, "\"];\n");
+    if(nodes[i].synthetic) {
+      fprintf(out, "  n%zu [label=\"", i);
+      rom_disasm_escapeDot(out, nodes[i].syntheticLabel.c_str());
+      fprintf(out, "\", style=dashed];\n");
+    } else {
+      fprintf(out, "  n%zu [label=\"%06x\\n", i, nodes[i].info.address & 0xffffff);
+      rom_disasm_escapeDot(out, nodes[i].info.formatted);
+      fprintf(out, "\"];\n");
+    }
   }
 
   for(size_t i = 0; i < edges.size(); ++i) {
