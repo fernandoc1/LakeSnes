@@ -6,38 +6,61 @@
 #include "cpu.h"
 #include "snes.h"
 
-static const uint8_t ff6_actor_block[] = {
-    // Extracted EXACTLY from your dump ($1800–$1850)
+#define FF6_PARTY_OFFSET        0x15E0   // party formation area
+#define FF6_CHAR_BASE           0x1600   // character structs
+#define FF6_CHAR_SIZE           0x25
 
-    0x20,0x0E,0x96,0x84,0x83,0x86,0x84,0xFF,
-    0x03,0x3B,0x00,0x5B,0x00,0x00,0x00,0x08,
-    0x00,0x84,0x00,0x00,0x08,0x00,0x00,0xFF,
-    0xFF,0x01,0x28,0x23,0x2E,0x1D,0xFF,0x0A,
+#define FF6_SLOT_COUNT          4
 
-    0x21,0x0E,0x95,0x88,0x82,0x8A,0x92,0xFF,
-    0x03,0x40,0x00,0x5D,0x00,0x00,0x00,0x08,
-    0x00,0x84,0x00,0x00,0x08,0x00,0x00,0xFF,
-    0xFF,0x01,0x29,0x24,0x2D,0x1C,0xFF,0x0A
-};
+// Actor IDs (confirmed FF6)
+#define ACTOR_TERRA  0x00
+#define ACTOR_BIGGS  0x0E
+#define ACTOR_WEDGE  0x0F
+
+static void ff6_initCharacter(uint8_t* ram, uint8_t id, uint16_t hp) {
+    uint32_t base = FF6_CHAR_BASE + (id * FF6_CHAR_SIZE);
+
+    // Clear struct
+    memset(&ram[base], 0, FF6_CHAR_SIZE);
+
+    // ---- Minimal required fields ----
+
+    ram[base + 0x00] = id;        // character ID
+
+    // HP (IMPORTANT: must be non-zero or character won't appear)
+    ram[base + 0x0B] = hp & 0xFF;
+    ram[base + 0x0C] = (hp >> 8);
+
+    // Max HP
+    ram[base + 0x0D] = hp & 0xFF;
+    ram[base + 0x0E] = (hp >> 8);
+
+    // Enable commands (Fight at minimum)
+    ram[base + 0x15] = 0x00; // Fight
+
+    // Clear bad status (avoid Imp issue you saw)
+    ram[base + 0x01] = 0x00;
+}
 
 static bool ff6_handleFillPartyData(Snes* snes) {
+    if (!snes || !snes->ram) return false;
+
     uint8_t* ram = (uint8_t*)snes->ram;
 
-    fprintf(stderr, "ff6: actor injection\n");
+    // --------------------------------
+    // 1. Set party formation
+    // --------------------------------
+    ram[FF6_PARTY_OFFSET + 0] = ACTOR_TERRA;
+    ram[FF6_PARTY_OFFSET + 1] = ACTOR_BIGGS;
+    ram[FF6_PARTY_OFFSET + 2] = ACTOR_WEDGE;
+    ram[FF6_PARTY_OFFSET + 3] = 0xFF; // empty
 
-    // --- Step 1: valid character stats ---
-    for (int i = 0; i < 3; i++) {
-        uint8_t* c = ram + 0x1600 + (i * 0x25);
-
-        c[0x00] = i;
-        c[0x08] = 5;
-
-        c[0x09] = 0x64; c[0x0A] = 0x00;
-        c[0x0B] = 0x64; c[0x0C] = 0x00;
-    }
-
-    // --- Step 2: CRITICAL actor block ---
-    memcpy(ram + 0x1800, ff6_actor_block, sizeof(ff6_actor_block));
+    // --------------------------------
+    // 2. Initialize characters
+    // --------------------------------
+    ff6_initCharacter(ram, ACTOR_TERRA, 300);
+    ff6_initCharacter(ram, ACTOR_BIGGS, 280);
+    ff6_initCharacter(ram, ACTOR_WEDGE, 260);
 
     return true;
 }
@@ -64,7 +87,7 @@ static bool ff6_handleFunction05(Snes* snes) {
 
 static bool ff6_handleFunction07(Snes* snes) {
   fprintf(stderr, "hooklib_ff6: function 07 called\n");
-  return true;
+  //return true;
 
   //Load ram from file for testing
   char filename[256];
