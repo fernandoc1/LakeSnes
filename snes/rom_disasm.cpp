@@ -525,6 +525,65 @@ static void rom_disasm_writeFunctionLabel(FILE* out, uint32_t entry, const RomFu
   }
 }
 
+static void rom_disasm_writeJsonEscaped(FILE* out, const char* text) {
+  for(const char* p = text; *p != '\0'; ++p) {
+    switch(*p) {
+      case '\\':
+      case '"':
+        fputc('\\', out);
+        fputc(*p, out);
+        break;
+      case '\n':
+        fputs("\\n", out);
+        break;
+      case '\r':
+        fputs("\\r", out);
+        break;
+      case '\t':
+        fputs("\\t", out);
+        break;
+      default:
+        fputc(*p, out);
+        break;
+    }
+  }
+}
+
+static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNode>& nodes) {
+  if(out == NULL) {
+    return;
+  }
+
+  fprintf(out, "{\n  \"annotations\": [\n");
+  bool first = true;
+  for(size_t i = 0; i < nodes.size(); ++i) {
+    if(nodes[i].synthetic || !nodes[i].hasFileOffset || nodes[i].info.size == 0) {
+      continue;
+    }
+    if(!first) {
+      fprintf(out, ",\n");
+    }
+    first = false;
+    fprintf(out, "    {\n");
+    fprintf(out, "      \"positions\": [");
+    for(uint8_t j = 0; j < nodes[i].info.size; ++j) {
+      if(j != 0) {
+        fprintf(out, ", ");
+      }
+      fprintf(out, "%u", (unsigned)(nodes[i].fileOffset + j));
+    }
+    fprintf(out, "],\n");
+    fprintf(out, "      \"note\": \"");
+    char note[128];
+    snprintf(note, sizeof(note), "%06x: %s", nodes[i].info.address & 0xffffff, nodes[i].info.formatted);
+    rom_disasm_writeJsonEscaped(out, note);
+    fprintf(out, "\",\n");
+    fprintf(out, "      \"color\": \"#72e67a\"\n");
+    fprintf(out, "    }");
+  }
+  fprintf(out, "\n  ]\n}\n");
+}
+
 static void rom_disasm_reportProgress(
   const RomDisassemblyControl* control,
   size_t nodes,
@@ -646,7 +705,7 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
   return true;
 }
 
-bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimit, const RomDisassemblyControl* control) {
+bool rom_disassemble_cfg_with_outputs(Snes* snes, FILE* out, FILE* notesOut, int instructionLimit, const RomDisassemblyControl* control) {
   if(snes == NULL || out == NULL || instructionLimit < 0) {
     return false;
   }
@@ -1083,9 +1142,14 @@ bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimi
   fprintf(out, "  }\n");
 
   fprintf(out, "}\n");
+  rom_disasm_writeNotesJson(notesOut, nodes);
   return true;
 }
 
 bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
-  return rom_disassemble_cfg_with_control(snes, out, instructionLimit, NULL);
+  return rom_disassemble_cfg_with_outputs(snes, out, NULL, instructionLimit, NULL);
+}
+
+bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimit, const RomDisassemblyControl* control) {
+  return rom_disassemble_cfg_with_outputs(snes, out, NULL, instructionLimit, control);
 }

@@ -85,7 +85,7 @@ static void renderScreen(void);
 static void handleInput(int keyCode, bool pressed);
 static bool saveTraceFile(bool verbose);
 static void beginTraceRecording(bool fromStartup);
-static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath);
+static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath, const char* notesOutputPath);
 static bool loadCoprocessorLibrary(const char* path);
 static void unloadCoprocessorLibrary(void);
 static void handleCfgStopSignal(int signalNumber);
@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
   const char* romPath = NULL;
   const char* copLibPath = NULL;
   const char* cfgOutputPath = NULL;
+  const char* cfgNotesOutputPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
@@ -142,6 +143,12 @@ int main(int argc, char** argv) {
         return 1;
       }
       cfgOutputPath = argv[++i];
+    } else if(strcmp(argv[i], "--cfg-notes-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --cfg-notes-out\n");
+        return 1;
+      }
+      cfgNotesOutputPath = argv[++i];
     } else if(romPath == NULL) {
       romPath = argv[i];
     } else {
@@ -160,7 +167,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, "Usage: %s --disasm-rom [--disasm-limit N] <rom>\n", argv[0]);
       return 1;
     }
-    return runRomDisassembly(romPath, disasmInstructionLimit, false, NULL);
+    return runRomDisassembly(romPath, disasmInstructionLimit, false, NULL, NULL);
   }
 
   if(cfgRomMode) {
@@ -168,7 +175,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, "Usage: %s --cfg-rom --cfg-out <file.dot> [--cfg-limit N] <rom>\n", argv[0]);
       return 1;
     }
-    return runRomDisassembly(romPath, disasmInstructionLimit, true, cfgOutputPath);
+    return runRomDisassembly(romPath, disasmInstructionLimit, true, cfgOutputPath, cfgNotesOutputPath);
   }
 
   if(getenv("LAKESNES_DEBUG") != NULL) {
@@ -569,7 +576,7 @@ static void loadRom(const char* path) {
   free(file);
 }
 
-static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath) {
+static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath, const char* notesOutputPath) {
   int length = 0;
   uint8_t* file = readRomImage(romPath, &length);
   if(file == NULL) {
@@ -582,6 +589,7 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
   cpu_setMemViewerEnabled(true);
   int result = 0;
   FILE* out = stdout;
+  FILE* notesOut = NULL;
   bool signalHandlersInstalled = false;
 #ifndef _WIN32
   struct sigaction oldSigUsr1 = {};
@@ -597,6 +605,15 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
         fprintf(stderr, "Failed to open CFG output '%s'\n", outputPath);
         result = 1;
       } else {
+        if(notesOutputPath != NULL) {
+          notesOut = fopen(notesOutputPath, "w");
+          if(notesOut == NULL) {
+            fprintf(stderr, "Failed to open CFG notes output '%s'\n", notesOutputPath);
+            result = 1;
+          }
+        }
+      }
+      if(result == 0) {
         RomDisassemblyControl control = {};
         g_cfgStopRequested = 0;
         g_cfgStatusRequested = 0;
@@ -617,7 +634,7 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
         control.statusCallback = printCfgProgress;
         control.userData = NULL;
         control.statusInterval = 50000;
-        if(!rom_disassemble_cfg_with_control(snes, out, instructionLimit, &control)) {
+        if(!rom_disassemble_cfg_with_outputs(snes, out, notesOut, instructionLimit, &control)) {
           fprintf(stderr, "Failed to build CFG for ROM '%s'\n", romPath);
           result = 1;
         }
@@ -637,6 +654,9 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
 
   if(out != NULL && out != stdout) {
     fclose(out);
+  }
+  if(notesOut != NULL) {
+    fclose(notesOut);
   }
 
   snes_free(snes);
