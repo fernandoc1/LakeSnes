@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -87,6 +88,12 @@ static void beginTraceRecording(bool fromStartup);
 static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath);
 static bool loadCoprocessorLibrary(const char* path);
 static void unloadCoprocessorLibrary(void);
+static void handleCfgStopSignal(int signalNumber);
+static void handleCfgStatusSignal(int signalNumber);
+static void printCfgProgress(void* userData, const RomDisassemblyProgress* progress);
+
+static volatile sig_atomic_t g_cfgStopRequested = 0;
+static volatile sig_atomic_t g_cfgStatusRequested = 0;
 
 int main(int argc, char** argv) {
   bool disasmRomMode = false;
@@ -573,6 +580,12 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
   Snes* snes = snes_init();
   int result = 0;
   FILE* out = stdout;
+  bool signalHandlersInstalled = false;
+#ifndef _WIN32
+  struct sigaction oldSigInt = {};
+  struct sigaction oldSigTerm = {};
+  struct sigaction oldSigUsr1 = {};
+#endif
   if(!snes_loadRom(snes, file, length)) {
     fprintf(stderr, "Failed to load ROM '%s'\n", romPath);
     result = 1;
@@ -582,15 +595,46 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
       if(out == NULL) {
         fprintf(stderr, "Failed to open CFG output '%s'\n", outputPath);
         result = 1;
-      } else if(!rom_disassemble_cfg(snes, out, instructionLimit)) {
-        fprintf(stderr, "Failed to build CFG for ROM '%s'\n", romPath);
-        result = 1;
+      } else {
+        RomDisassemblyControl control = {};
+        g_cfgStopRequested = 0;
+        g_cfgStatusRequested = 0;
+#ifndef _WIN32
+        struct sigaction stopAction = {};
+        stopAction.sa_handler = handleCfgStopSignal;
+        sigemptyset(&stopAction.sa_mask);
+        struct sigaction statusAction = {};
+        statusAction.sa_handler = handleCfgStatusSignal;
+        sigemptyset(&statusAction.sa_mask);
+        sigaction(SIGINT, &stopAction, &oldSigInt);
+        sigaction(SIGTERM, &stopAction, &oldSigTerm);
+        sigaction(SIGUSR1, &statusAction, &oldSigUsr1);
+        signalHandlersInstalled = true;
+        fprintf(stderr, "CFG export running. Send SIGUSR1 for status, SIGINT or SIGTERM to stop cleanly.\n");
+#endif
+        control.stopRequested = &g_cfgStopRequested;
+        control.statusRequested = &g_cfgStatusRequested;
+        control.statusCallback = printCfgProgress;
+        control.userData = NULL;
+        control.statusInterval = 50000;
+        if(!rom_disassemble_cfg_with_control(snes, out, instructionLimit, &control)) {
+          fprintf(stderr, "Failed to build CFG for ROM '%s'\n", romPath);
+          result = 1;
+        }
       }
     } else if(!rom_disassemble(snes, out, instructionLimit)) {
       fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
       result = 1;
     }
   }
+
+#ifndef _WIN32
+  if(signalHandlersInstalled) {
+    sigaction(SIGINT, &oldSigInt, NULL);
+    sigaction(SIGTERM, &oldSigTerm, NULL);
+    sigaction(SIGUSR1, &oldSigUsr1, NULL);
+  }
+#endif
 
   if(out != NULL && out != stdout) {
     fclose(out);
@@ -599,6 +643,37 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
   snes_free(snes);
   free(file);
   return result;
+}
+
+static void handleCfgStopSignal(int signalNumber) {
+  (void) signalNumber;
+  g_cfgStopRequested = 1;
+}
+
+static void handleCfgStatusSignal(int signalNumber) {
+  (void) signalNumber;
+  g_cfgStatusRequested = 1;
+}
+
+static void printCfgProgress(void* userData, const RomDisassemblyProgress* progress) {
+  (void) userData;
+  if(progress == NULL) {
+    return;
+  }
+
+  fprintf(
+    stderr,
+    "CFG status: nodes=%zu edges=%zu processed=%zu queued=%zu unresolved_jumps=%zu unresolved_calls=%zu unresolved_returns=%zu%s%s\n",
+    progress->nodes,
+    progress->edges,
+    progress->processedNodes,
+    progress->queuedNodes,
+    progress->unresolvedIndirectJumps,
+    progress->unresolvedIndirectCalls,
+    progress->unresolvedReturns,
+    progress->stopRequested ? " stop-requested" : "",
+    progress->completed ? (progress->hitNodeLimit ? " stopped-at-limit" : (progress->stopRequested ? " stopped-by-signal" : " finished")) : ""
+  );
 }
 
 static void closeRom() {

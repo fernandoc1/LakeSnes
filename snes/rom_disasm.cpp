@@ -366,6 +366,39 @@ static void rom_disasm_escapeDot(FILE* out, const char* text) {
   }
 }
 
+static void rom_disasm_reportProgress(
+  const RomDisassemblyControl* control,
+  size_t nodes,
+  size_t edges,
+  size_t unresolvedIndirectJumpCount,
+  size_t unresolvedIndirectCallCount,
+  size_t unresolvedReturnCount,
+  size_t processedNodes,
+  size_t queuedNodes,
+  int instructionLimit,
+  bool hitNodeLimit,
+  bool stopRequested,
+  bool completed
+) {
+  if(control == NULL || control->statusCallback == NULL) {
+    return;
+  }
+
+  RomDisassemblyProgress progress = {};
+  progress.nodes = nodes;
+  progress.edges = edges;
+  progress.unresolvedIndirectJumps = unresolvedIndirectJumpCount;
+  progress.unresolvedIndirectCalls = unresolvedIndirectCallCount;
+  progress.unresolvedReturns = unresolvedReturnCount;
+  progress.processedNodes = processedNodes;
+  progress.queuedNodes = queuedNodes;
+  progress.instructionLimit = instructionLimit;
+  progress.hitNodeLimit = hitNodeLimit;
+  progress.stopRequested = stopRequested;
+  progress.completed = completed;
+  control->statusCallback(control->userData, &progress);
+}
+
 bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
   if(snes == NULL || out == NULL || instructionLimit <= 0) {
     return false;
@@ -438,7 +471,7 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
   return true;
 }
 
-bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
+bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimit, const RomDisassemblyControl* control) {
   if(snes == NULL || out == NULL || instructionLimit < 0) {
     return false;
   }
@@ -461,6 +494,9 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   size_t unresolvedIndirectCallCount = 0;
   size_t unresolvedReturnCount = 0;
   bool hitNodeLimit = false;
+  bool stopRequested = false;
+  size_t lastStatusNodeCount = 0;
+  size_t processedNodeCount = 0;
 
   if(!rom_disasm_isRomAddress(snes, initialState.address)) {
     return false;
@@ -470,6 +506,25 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   }
 
   for(size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+    if(control != NULL && control->stopRequested != NULL && *control->stopRequested != 0) {
+      stopRequested = true;
+      rom_disasm_reportProgress(
+        control,
+        nodes.size(),
+        edges.size(),
+        unresolvedIndirectJumpCount,
+        unresolvedIndirectCallCount,
+        unresolvedReturnCount,
+        processedNodeCount,
+        worklist.size(),
+        instructionLimit,
+        hitNodeLimit,
+        true,
+        false
+      );
+      break;
+    }
+
     const size_t nodeIndex = worklist[cursor];
     const RomAnalysisNode& node = nodes[nodeIndex];
     const RomAnalysisState nextState = rom_disasm_advanceState(node.state, node.info);
@@ -602,7 +657,54 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
     if(instructionLimit > 0 && nodes.size() >= (size_t)instructionLimit) {
       hitNodeLimit = true;
     }
+    processedNodeCount = cursor + 1;
+
+    const bool statusRequested =
+      control != NULL &&
+      control->statusRequested != NULL &&
+      *control->statusRequested != 0;
+    const bool intervalReached =
+      control != NULL &&
+      control->statusCallback != NULL &&
+      control->statusInterval > 0 &&
+      nodes.size() >= lastStatusNodeCount + control->statusInterval;
+
+    if(statusRequested || intervalReached) {
+      rom_disasm_reportProgress(
+        control,
+        nodes.size(),
+        edges.size(),
+        unresolvedIndirectJumpCount,
+        unresolvedIndirectCallCount,
+        unresolvedReturnCount,
+        processedNodeCount,
+        worklist.size(),
+        instructionLimit,
+        hitNodeLimit,
+        false,
+        false
+      );
+      lastStatusNodeCount = nodes.size();
+      if(control != NULL && control->statusRequested != NULL) {
+        *control->statusRequested = 0;
+      }
+    }
   }
+
+  rom_disasm_reportProgress(
+    control,
+    nodes.size(),
+    edges.size(),
+    unresolvedIndirectJumpCount,
+    unresolvedIndirectCallCount,
+    unresolvedReturnCount,
+    processedNodeCount,
+    worklist.size(),
+    instructionLimit,
+    hitNodeLimit,
+    stopRequested,
+    true
+  );
 
   fprintf(out, "digraph rom_cfg {\n");
   fprintf(out, "  // nodes: %zu\n", nodes.size());
@@ -615,7 +717,11 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
   } else {
     fprintf(out, "  // limit: %d\n", instructionLimit);
   }
-  fprintf(out, "  // traversal: %s\n", hitNodeLimit ? "stopped at limit" : "worklist exhausted");
+  if(stopRequested) {
+    fprintf(out, "  // traversal: stopped by signal\n");
+  } else {
+    fprintf(out, "  // traversal: %s\n", hitNodeLimit ? "stopped at limit" : "worklist exhausted");
+  }
   fprintf(out, "  node [shape=box];\n");
 
   for(size_t i = 0; i < nodes.size(); ++i) {
@@ -640,4 +746,8 @@ bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
 
   fprintf(out, "}\n");
   return true;
+}
+
+bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit) {
+  return rom_disassemble_cfg_with_control(snes, out, instructionLimit, NULL);
 }
