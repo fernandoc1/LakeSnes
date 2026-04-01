@@ -550,6 +550,60 @@ static void rom_disasm_writeJsonEscaped(FILE* out, const char* text) {
   }
 }
 
+static bool rom_disasm_directTarget(const CpuInstructionInfo& info, uint32_t* targetAddress) {
+  if(targetAddress == NULL) {
+    return false;
+  }
+
+  switch(info.opcode) {
+    case 0x10: // bpl
+    case 0x30: // bmi
+    case 0x50: // bvc
+    case 0x70: // bvs
+    case 0x80: // bra
+    case 0x90: // bcc
+    case 0xb0: // bcs
+    case 0xd0: // bne
+    case 0xf0: // beq
+      *targetAddress = rom_disasm_relativeTarget(info);
+      return true;
+    case 0x82: // brl
+      *targetAddress = rom_disasm_relativeLongTarget(info);
+      return true;
+    case 0x20: // jsr abs
+    case 0x4c: // jmp abs
+      *targetAddress = rom_disasm_absoluteTarget(info);
+      return true;
+    case 0x22: // jsl abl
+    case 0x5c: // jml abl
+      *targetAddress = rom_disasm_longTarget(info);
+      return true;
+    default:
+      return false;
+  }
+}
+
+static std::string rom_disasm_noteTextForNode(const Snes* snes, const RomAnalysisNode& node) {
+  char prefix[32];
+  snprintf(prefix, sizeof(prefix), "%06x: %s", node.info.address & 0xffffff, node.info.mnemonic);
+
+  std::string note = prefix;
+  if(node.info.operands[0] != '\0') {
+    uint32_t targetAddress = 0;
+    uint32_t targetFileOffset = 0;
+    note += " ";
+    if(rom_disasm_directTarget(node.info, &targetAddress) && rom_disasm_getFileOffset(snes, targetAddress, &targetFileOffset)) {
+      char link[96];
+      snprintf(link, sizeof(link), "[[jump:0x%x|%s]]", targetFileOffset, node.info.operands);
+      note += link;
+    } else {
+      note += node.info.operands;
+    }
+  }
+
+  return note;
+}
+
 static void rom_disasm_mnemonicColor(const char* mnemonic, char* color, size_t colorSize) {
   uint32_t hash = 2166136261u;
   if(mnemonic != NULL) {
@@ -595,7 +649,7 @@ static void rom_disasm_mnemonicColor(const char* mnemonic, char* color, size_t c
   snprintf(color, colorSize, "#%02x%02x%02x", r & 0xffu, g & 0xffu, b & 0xffu);
 }
 
-static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNode>& nodes) {
+static void rom_disasm_writeNotesJson(FILE* out, const Snes* snes, const std::vector<RomAnalysisNode>& nodes) {
   if(out == NULL) {
     return;
   }
@@ -620,11 +674,10 @@ static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNo
     }
     fprintf(out, "],\n");
     fprintf(out, "      \"note\": \"");
-    char note[128];
+    const std::string note = rom_disasm_noteTextForNode(snes, nodes[i]);
     char color[16];
-    snprintf(note, sizeof(note), "%06x: %s", nodes[i].info.address & 0xffffff, nodes[i].info.formatted);
     rom_disasm_mnemonicColor(nodes[i].info.mnemonic, color, sizeof(color));
-    rom_disasm_writeJsonEscaped(out, note);
+    rom_disasm_writeJsonEscaped(out, note.c_str());
     fprintf(out, "\",\n");
     fprintf(out, "      \"color\": \"%s\"\n", color);
     fprintf(out, "    }");
@@ -1190,7 +1243,7 @@ bool rom_disassemble_cfg_with_outputs(Snes* snes, FILE* out, FILE* notesOut, int
   fprintf(out, "  }\n");
 
   fprintf(out, "}\n");
-  rom_disasm_writeNotesJson(notesOut, nodes);
+  rom_disasm_writeNotesJson(notesOut, snes, nodes);
   return true;
 }
 
