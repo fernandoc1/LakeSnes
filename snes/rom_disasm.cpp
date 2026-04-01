@@ -570,7 +570,7 @@ static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNo
       if(j != 0) {
         fprintf(out, ", ");
       }
-      fprintf(out, "%u", (unsigned)(nodes[i].fileOffset + j));
+      fprintf(out, "\"0x%x\"", (unsigned)(nodes[i].fileOffset + j));
     }
     fprintf(out, "],\n");
     fprintf(out, "      \"note\": \"");
