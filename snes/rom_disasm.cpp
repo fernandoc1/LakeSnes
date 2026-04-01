@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 
 #include <string>
 #include <functional>
@@ -550,33 +551,48 @@ static void rom_disasm_writeJsonEscaped(FILE* out, const char* text) {
 }
 
 static void rom_disasm_mnemonicColor(const char* mnemonic, char* color, size_t colorSize) {
-  uint32_t r = 0x45;
-  uint32_t g = 0x7a;
-  uint32_t b = 0xbd;
-
+  uint32_t hash = 2166136261u;
   if(mnemonic != NULL) {
     for(size_t i = 0; mnemonic[i] != '\0'; ++i) {
-      const uint8_t ch = (uint8_t)mnemonic[i];
-      switch(i % 3) {
-        case 0:
-          r = ((r * 131u) + ch + 17u) & 0xffu;
-          break;
-        case 1:
-          g = ((g * 137u) + ch + 29u) & 0xffu;
-          break;
-        default:
-          b = ((b * 149u) + ch + 43u) & 0xffu;
-          break;
-      }
+      hash ^= (uint8_t)mnemonic[i];
+      hash *= 16777619u;
     }
   }
 
-  // Keep colors away from very dark or washed-out tones so highlights stay visible.
-  r = 72u + (r % 144u);
-  g = 72u + (g % 144u);
-  b = 72u + (b % 144u);
+  // Spread mnemonics around the full hue circle while keeping saturation/value readable.
+  const double hue = (double)(hash % 360u);
+  const double saturation = 0.55 + (double)((hash >> 9) & 0x1f) / 100.0;   // 0.55 - 0.86
+  const double value = 0.72 + (double)((hash >> 17) & 0x0f) / 50.0;        // 0.72 - 1.02
+  const double s = saturation > 0.88 ? 0.88 : saturation;
+  const double v = value > 0.96 ? 0.96 : value;
 
-  snprintf(color, colorSize, "#%02x%02x%02x", (unsigned)r, (unsigned)g, (unsigned)b);
+  const double c = v * s;
+  const double hPrime = hue / 60.0;
+  const double x = c * (1.0 - fabs(fmod(hPrime, 2.0) - 1.0));
+  double r1 = 0.0;
+  double g1 = 0.0;
+  double b1 = 0.0;
+
+  if(hPrime < 1.0) {
+    r1 = c; g1 = x; b1 = 0.0;
+  } else if(hPrime < 2.0) {
+    r1 = x; g1 = c; b1 = 0.0;
+  } else if(hPrime < 3.0) {
+    r1 = 0.0; g1 = c; b1 = x;
+  } else if(hPrime < 4.0) {
+    r1 = 0.0; g1 = x; b1 = c;
+  } else if(hPrime < 5.0) {
+    r1 = x; g1 = 0.0; b1 = c;
+  } else {
+    r1 = c; g1 = 0.0; b1 = x;
+  }
+
+  const double m = v - c;
+  const unsigned r = (unsigned)((r1 + m) * 255.0);
+  const unsigned g = (unsigned)((g1 + m) * 255.0);
+  const unsigned b = (unsigned)((b1 + m) * 255.0);
+
+  snprintf(color, colorSize, "#%02x%02x%02x", r & 0xffu, g & 0xffu, b & 0xffu);
 }
 
 static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNode>& nodes) {
