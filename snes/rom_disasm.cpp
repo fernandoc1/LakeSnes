@@ -549,6 +549,36 @@ static void rom_disasm_writeJsonEscaped(FILE* out, const char* text) {
   }
 }
 
+static void rom_disasm_mnemonicColor(const char* mnemonic, char* color, size_t colorSize) {
+  uint32_t r = 0x45;
+  uint32_t g = 0x7a;
+  uint32_t b = 0xbd;
+
+  if(mnemonic != NULL) {
+    for(size_t i = 0; mnemonic[i] != '\0'; ++i) {
+      const uint8_t ch = (uint8_t)mnemonic[i];
+      switch(i % 3) {
+        case 0:
+          r = ((r * 131u) + ch + 17u) & 0xffu;
+          break;
+        case 1:
+          g = ((g * 137u) + ch + 29u) & 0xffu;
+          break;
+        default:
+          b = ((b * 149u) + ch + 43u) & 0xffu;
+          break;
+      }
+    }
+  }
+
+  // Keep colors away from very dark or washed-out tones so highlights stay visible.
+  r = 72u + (r % 144u);
+  g = 72u + (g % 144u);
+  b = 72u + (b % 144u);
+
+  snprintf(color, colorSize, "#%02x%02x%02x", (unsigned)r, (unsigned)g, (unsigned)b);
+}
+
 static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNode>& nodes) {
   if(out == NULL) {
     return;
@@ -575,10 +605,12 @@ static void rom_disasm_writeNotesJson(FILE* out, const std::vector<RomAnalysisNo
     fprintf(out, "],\n");
     fprintf(out, "      \"note\": \"");
     char note[128];
+    char color[16];
     snprintf(note, sizeof(note), "%06x: %s", nodes[i].info.address & 0xffffff, nodes[i].info.formatted);
+    rom_disasm_mnemonicColor(nodes[i].info.mnemonic, color, sizeof(color));
     rom_disasm_writeJsonEscaped(out, note);
     fprintf(out, "\",\n");
-    fprintf(out, "      \"color\": \"#72e67a\"\n");
+    fprintf(out, "      \"color\": \"%s\"\n", color);
     fprintf(out, "    }");
   }
   fprintf(out, "\n  ]\n}\n");
