@@ -68,6 +68,7 @@ static struct {
   char* statePath;
   char* tracePath;
   char* traceDisassemblyPath;
+  char* runtimeCfgPath;
   TraceRecorder* traceRecorder;
   bool recordTraceOnStartup;
   void* copLibHandle;
@@ -103,6 +104,7 @@ int main(int argc, char** argv) {
   const char* copLibPath = NULL;
   const char* cfgOutputPath = NULL;
   const char* cfgNotesOutputPath = NULL;
+  const char* runtimeCfgOutputPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
@@ -149,6 +151,12 @@ int main(int argc, char** argv) {
         return 1;
       }
       cfgNotesOutputPath = argv[++i];
+    } else if(strcmp(argv[i], "--runtime-cfg-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --runtime-cfg-out\n");
+        return 1;
+      }
+      runtimeCfgOutputPath = argv[++i];
     } else if(romPath == NULL) {
       romPath = argv[i];
     } else {
@@ -257,6 +265,7 @@ int main(int argc, char** argv) {
   glb.statePath = NULL;
   glb.tracePath = NULL;
   glb.traceDisassemblyPath = NULL;
+  glb.runtimeCfgPath = runtimeCfgOutputPath != NULL ? strdup(runtimeCfgOutputPath) : NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
   glb.copLibHandle = NULL;
   if(copLibPath != NULL && !loadCoprocessorLibrary(copLibPath)) {
@@ -486,6 +495,7 @@ int main(int argc, char** argv) {
   if(glb.statePath) free(glb.statePath);
   if(glb.tracePath) free(glb.tracePath);
   if(glb.traceDisassemblyPath) free(glb.traceDisassemblyPath);
+  if(glb.runtimeCfgPath) free(glb.runtimeCfgPath);
   SDL_DestroyTexture(glb.texture);
   SDL_DestroyRenderer(glb.renderer);
   SDL_DestroyWindow(glb.window);
@@ -572,6 +582,14 @@ static void loadRom(const char* path) {
       free(saveData);
     }
     if(glb.recordTraceOnStartup) beginTraceRecording(true);
+    if(glb.runtimeCfgPath != NULL) {
+      traceRecorder_clearRuntimeGraph(glb.traceRecorder);
+      traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, true);
+      printf("Started runtime CFG capture to %s\n", glb.runtimeCfgPath);
+    } else {
+      traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, false);
+      traceRecorder_clearRuntimeGraph(glb.traceRecorder);
+    }
   } // else, rom load failed, old rom still loaded
   free(file);
 }
@@ -705,8 +723,16 @@ static void printCfgProgress(void* userData, const RomDisassemblyProgress* progr
 
 static void closeRom() {
   if(!glb.loaded) return;
+  if(glb.runtimeCfgPath != NULL) {
+    if(traceRecorder_dumpRuntimeGraph(glb.traceRecorder, glb.runtimeCfgPath)) {
+      printf("Saved runtime CFG to %s\n", glb.runtimeCfgPath);
+    } else {
+      printf("Failed to save runtime CFG to %s\n", glb.runtimeCfgPath);
+    }
+  }
   saveTraceFile(false);
   traceRecorder_end(glb.traceRecorder);
+  traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, false);
   traceRecorder_clear(glb.traceRecorder);
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {

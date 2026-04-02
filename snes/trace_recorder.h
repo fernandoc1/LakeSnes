@@ -24,6 +24,9 @@ bool traceRecorder_restoreInitialState(TraceRecorder* recorder);
 bool traceRecorder_saveToFile(const TraceRecorder* recorder, const char* path);
 bool traceRecorder_loadFromFile(TraceRecorder* recorder, const char* path);
 bool traceRecorder_dumpDisassembly(const TraceRecorder* recorder, const char* path);
+void traceRecorder_setRuntimeGraphEnabled(TraceRecorder* recorder, bool enabled);
+void traceRecorder_clearRuntimeGraph(TraceRecorder* recorder);
+bool traceRecorder_dumpRuntimeGraph(const TraceRecorder* recorder, const char* path);
 void traceRecorder_formatRecord(const CpuInstructionInfo* info, char* line, size_t lineSize);
 
 #endif
