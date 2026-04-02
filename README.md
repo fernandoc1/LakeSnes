@@ -66,6 +66,123 @@ This build depends on `SDL2.dll` being placed next to the executable.
 
 The emulator can be run by opening `lakesnes` directly or by running `./lakesnes`, taking an optional path to a ROM-file to open. ROM-files can also be dragged on the emulator window to open them. ZIP-files also work, the first file within with a `.smc` or `.sfc` will be loaded (zip support uses [this](https://github.com/kuba--/zip) zip-library, which uses Miniz, both under the Unlicence).
 
+## Command line options
+
+`lakesnes` supports normal emulator startup plus a few analysis/export modes.
+
+### Basic forms
+
+Run the emulator, optionally opening a ROM immediately:
+
+```bash
+./lakesnes
+./lakesnes path/to/game.sfc
+```
+
+Run with trace recording enabled from startup:
+
+```bash
+./lakesnes --record-trace path/to/game.sfc
+```
+
+Load a coprocessor hook library:
+
+```bash
+./lakesnes --cop-lib path/to/libhook.so path/to/game.sfc
+```
+
+Disassemble ROM bytes starting from reset:
+
+```bash
+./lakesnes --disasm-rom [--disasm-limit N] path/to/game.sfc
+```
+
+Build a static CFG from ROM analysis:
+
+```bash
+./lakesnes --cfg-rom --cfg-out path/to/rom_cfg.dot [--cfg-limit N] [--cfg-notes-out path/to/notes.json] path/to/game.sfc
+```
+
+Record a runtime CFG during emulation and dump it on exit:
+
+```bash
+./lakesnes --runtime-cfg-out path/to/runtime_cfg.dot path/to/game.sfc
+```
+
+### Options
+
+| Option | Meaning |
+| ------ | ------- |
+| `--record-trace` | Starts instruction trace recording automatically after the ROM is loaded. This uses the same trace file path the interactive trace hotkeys use. |
+| `--cop-lib <path>` | Loads a dynamic library and installs its exported coprocessor hook (`lakesnes_cop_execute`) into the emulator CPU. |
+| `--disasm-rom` | Runs ROM disassembly mode instead of launching the interactive emulator. |
+| `--disasm-limit <N>` | Limits the ROM disassembly to `N` instructions. Must be greater than zero. Default: `4096`. |
+| `--cfg-rom` | Runs static control-flow graph generation mode instead of launching the interactive emulator. |
+| `--cfg-out <file.dot>` | Required with `--cfg-rom`. Writes the static CFG in Graphviz DOT format. |
+| `--cfg-limit <N>` | Limits static CFG analysis to `N` discovered nodes. `0` means no node limit. Default: `4096`. |
+| `--cfg-notes-out <file.json>` | Optional with `--cfg-rom`. Writes mem_viewer-compatible note annotations for discovered instructions. |
+| `--runtime-cfg-out <file.dot>` | Enables runtime CFG capture during normal emulation and writes the executed instruction graph to the given DOT file when the ROM is closed or the emulator exits. |
+
+### Notes
+
+- `--disasm-rom` and `--cfg-rom` are mutually exclusive.
+- `--cfg-out` is mandatory when `--cfg-rom` is used.
+- In `--cfg-rom` mode on POSIX systems, `SIGUSR1` prints progress and `SIGUSR2` requests a clean stop.
+- Runtime CFG export is based on executed instructions only. Static CFG export is based on reachable decoded ROM instructions.
+- The plain emulator path still accepts an optional ROM path even when no other flags are supplied.
+
+### Examples
+
+Start the emulator with a ROM:
+
+```bash
+./lakesnes roms/ff6-en1.sfc
+```
+
+Start the emulator and immediately begin trace recording:
+
+```bash
+./lakesnes --record-trace roms/ff6-en1.sfc
+```
+
+Start the emulator with a coprocessor hook library:
+
+```bash
+./lakesnes --cop-lib ./hooklib_ff6/libff6cop.so roms/ff6-en1.sfc
+```
+
+Dump a short reset-based ROM disassembly to stdout:
+
+```bash
+./lakesnes --disasm-rom --disasm-limit 256 roms/ff6-en1.sfc
+```
+
+Build a static CFG and stop after 10,000 discovered nodes:
+
+```bash
+./lakesnes --cfg-rom --cfg-out /tmp/ff6_cfg.dot --cfg-limit 10000 roms/ff6-en1.sfc
+```
+
+Build a static CFG plus mem_viewer notes:
+
+```bash
+./lakesnes --cfg-rom --cfg-out /tmp/ff6_cfg.dot --cfg-notes-out /tmp/ff6_cfg_notes.json roms/ff6-en1.sfc
+```
+
+Build an unlimited static CFG and ask it for progress from another terminal:
+
+```bash
+./lakesnes --cfg-rom --cfg-out /tmp/ff6_cfg.dot --cfg-limit 0 roms/ff6-en1.sfc
+kill -USR1 <pid>
+kill -USR2 <pid>
+```
+
+Capture a runtime CFG while playing normally, then dump it on exit:
+
+```bash
+./lakesnes --runtime-cfg-out /tmp/ff6_runtime_cfg.dot roms/ff6-en1.sfc
+```
+
 Currently, only normal joypads are supported, and only controller 1 has controls set up.
 
 | Button | Key         |
