@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 typedef struct Snes Snes;
+typedef void (*SnesAccessHook)(void* userData, uint32_t adr, uint8_t val, bool write);
 
 #include "cpu.h"
 #include "apu.h"
@@ -63,6 +64,8 @@ struct Snes {
   uint8_t openBus;
   uint32_t romFileSize;
   uint32_t romFileHeaderSize;
+  SnesAccessHook accessHook;
+  void* accessHookUserData;
 };
 
 Snes* snes_init(void);
@@ -97,5 +100,6 @@ int snes_saveBattery(Snes* snes, uint8_t* data);
 bool snes_loadBattery(Snes* snes, uint8_t* data, int size);
 int snes_saveState(Snes* snes, uint8_t* data);
 bool snes_loadState(Snes* snes, uint8_t* data, int size);
+void snes_setAccessHook(Snes* snes, SnesAccessHook hook, void* userData);
 
 #endif

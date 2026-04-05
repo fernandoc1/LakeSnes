@@ -69,6 +69,7 @@ static struct {
   char* tracePath;
   char* traceDisassemblyPath;
   char* runtimeCfgPath;
+  char* runtimeNotesPath;
   TraceRecorder* traceRecorder;
   bool recordTraceOnStartup;
   void* copLibHandle;
@@ -105,6 +106,7 @@ int main(int argc, char** argv) {
   const char* cfgOutputPath = NULL;
   const char* cfgNotesOutputPath = NULL;
   const char* runtimeCfgOutputPath = NULL;
+  const char* runtimeNotesOutputPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
@@ -157,6 +159,12 @@ int main(int argc, char** argv) {
         return 1;
       }
       runtimeCfgOutputPath = argv[++i];
+    } else if(strcmp(argv[i], "--runtime-notes-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --runtime-notes-out\n");
+        return 1;
+      }
+      runtimeNotesOutputPath = argv[++i];
     } else if(romPath == NULL) {
       romPath = argv[i];
     } else {
@@ -266,6 +274,7 @@ int main(int argc, char** argv) {
   glb.tracePath = NULL;
   glb.traceDisassemblyPath = NULL;
   glb.runtimeCfgPath = runtimeCfgOutputPath != NULL ? strdup(runtimeCfgOutputPath) : NULL;
+  glb.runtimeNotesPath = runtimeNotesOutputPath != NULL ? strdup(runtimeNotesOutputPath) : NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
   glb.copLibHandle = NULL;
   if(copLibPath != NULL && !loadCoprocessorLibrary(copLibPath)) {
@@ -496,6 +505,7 @@ int main(int argc, char** argv) {
   if(glb.tracePath) free(glb.tracePath);
   if(glb.traceDisassemblyPath) free(glb.traceDisassemblyPath);
   if(glb.runtimeCfgPath) free(glb.runtimeCfgPath);
+  if(glb.runtimeNotesPath) free(glb.runtimeNotesPath);
   SDL_DestroyTexture(glb.texture);
   SDL_DestroyRenderer(glb.renderer);
   SDL_DestroyWindow(glb.window);
@@ -589,6 +599,14 @@ static void loadRom(const char* path) {
     } else {
       traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, false);
       traceRecorder_clearRuntimeGraph(glb.traceRecorder);
+    }
+    if(glb.runtimeNotesPath != NULL) {
+      traceRecorder_clearRuntimeNotes(glb.traceRecorder);
+      traceRecorder_setRuntimeNotesEnabled(glb.traceRecorder, true);
+      printf("Started runtime notes capture to %s\n", glb.runtimeNotesPath);
+    } else {
+      traceRecorder_setRuntimeNotesEnabled(glb.traceRecorder, false);
+      traceRecorder_clearRuntimeNotes(glb.traceRecorder);
     }
   } // else, rom load failed, old rom still loaded
   free(file);
@@ -730,9 +748,17 @@ static void closeRom() {
       printf("Failed to save runtime CFG to %s\n", glb.runtimeCfgPath);
     }
   }
+  if(glb.runtimeNotesPath != NULL) {
+    if(traceRecorder_dumpRuntimeNotes(glb.traceRecorder, glb.runtimeNotesPath)) {
+      printf("Saved runtime notes to %s\n", glb.runtimeNotesPath);
+    } else {
+      printf("Failed to save runtime notes to %s\n", glb.runtimeNotesPath);
+    }
+  }
   saveTraceFile(false);
   traceRecorder_end(glb.traceRecorder);
   traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, false);
+  traceRecorder_setRuntimeNotesEnabled(glb.traceRecorder, false);
   traceRecorder_clear(glb.traceRecorder);
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {

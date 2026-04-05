@@ -38,6 +38,8 @@ Snes* snes_init(void) {
   snes->palTiming = false;
   snes->romFileSize = 0;
   snes->romFileHeaderSize = 0;
+  snes->accessHook = NULL;
+  snes->accessHookUserData = NULL;
   return snes;
 }
 
@@ -471,6 +473,7 @@ static uint8_t snes_rread(Snes* snes, uint32_t adr) {
 
 void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   snes->openBus = val;
+  const uint32_t fullAdr = adr & 0xffffff;
   uint8_t bank = adr >> 16;
   adr &= 0xffff;
   if(bank == 0x7e || bank == 0x7f) {
@@ -496,6 +499,9 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   }
   // write to cart
   cart_write(snes->cart, bank, adr, val);
+  if(snes->accessHook != NULL) {
+    snes->accessHook(snes->accessHookUserData, fullAdr, val, true);
+  }
 }
 
 static int snes_getAccessTime(Snes* snes, uint32_t adr) {
@@ -514,6 +520,9 @@ static int snes_getAccessTime(Snes* snes, uint32_t adr) {
 uint8_t snes_read(Snes* snes, uint32_t adr) {
   uint8_t val = snes_rread(snes, adr);
   snes->openBus = val;
+  if(snes->accessHook != NULL) {
+    snes->accessHook(snes->accessHookUserData, adr & 0xffffff, val, false);
+  }
   return val;
 }
 
@@ -534,6 +543,14 @@ void snes_cpuWrite(Snes* snes, uint32_t adr, uint8_t val) {
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);
   snes_write(snes, adr, val);
+}
+
+void snes_setAccessHook(Snes* snes, SnesAccessHook hook, void* userData) {
+  if(snes == NULL) {
+    return;
+  }
+  snes->accessHook = hook;
+  snes->accessHookUserData = userData;
 }
 
 // debugging

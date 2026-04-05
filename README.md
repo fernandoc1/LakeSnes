@@ -109,6 +109,12 @@ Record a runtime CFG during emulation and dump it on exit:
 ./lakesnes --runtime-cfg-out path/to/runtime_cfg.dot path/to/game.sfc
 ```
 
+Record runtime mem_viewer annotations during emulation and dump them on exit:
+
+```bash
+./lakesnes --runtime-notes-out path/to/runtime_notes.json path/to/game.sfc
+```
+
 ### Options
 
 | Option | Meaning |
@@ -122,6 +128,7 @@ Record a runtime CFG during emulation and dump it on exit:
 | `--cfg-limit <N>` | Limits static CFG analysis to `N` discovered nodes. `0` means no node limit. Default: `4096`. |
 | `--cfg-notes-out <file.json>` | Optional with `--cfg-rom`. Writes mem_viewer-compatible note annotations for discovered instructions. |
 | `--runtime-cfg-out <file.dot>` | Enables runtime CFG capture during normal emulation and writes the executed instruction graph to the given DOT file when the ROM is closed or the emulator exits. |
+| `--runtime-notes-out <file.json>` | Enables runtime note capture during normal emulation and writes mem_viewer-compatible annotations for executed ROM instructions and cartridge ROM accesses when the ROM is closed or the emulator exits. |
 
 ### Notes
 
@@ -129,6 +136,7 @@ Record a runtime CFG during emulation and dump it on exit:
 - `--cfg-out` is mandatory when `--cfg-rom` is used.
 - In `--cfg-rom` mode on POSIX systems, `SIGUSR1` prints progress and `SIGUSR2` requests a clean stop.
 - Runtime CFG export is based on executed instructions only. Static CFG export is based on reachable decoded ROM instructions.
+- Runtime notes export is keyed to ROM file offsets and is intended for use with `mem_viewer/bin_view` on the ROM file itself.
 - The plain emulator path still accepts an optional ROM path even when no other flags are supplied.
 
 ### Examples
@@ -181,6 +189,18 @@ Capture a runtime CFG while playing normally, then dump it on exit:
 
 ```bash
 ./lakesnes --runtime-cfg-out /tmp/ff6_runtime_cfg.dot roms/ff6-en1.sfc
+```
+
+Capture runtime mem_viewer notes while playing normally, then dump them on exit:
+
+```bash
+./lakesnes --runtime-notes-out /tmp/ff6_runtime_notes.json roms/ff6-en1.sfc
+```
+
+Capture both runtime CFG and runtime notes in one run:
+
+```bash
+./lakesnes --runtime-cfg-out /tmp/ff6_runtime_cfg.dot --runtime-notes-out /tmp/ff6_runtime_notes.json roms/ff6-en1.sfc
 ```
 
 Currently, only normal joypads are supported, and only controller 1 has controls set up.

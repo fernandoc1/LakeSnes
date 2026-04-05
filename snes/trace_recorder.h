@@ -27,6 +27,9 @@ bool traceRecorder_dumpDisassembly(const TraceRecorder* recorder, const char* pa
 void traceRecorder_setRuntimeGraphEnabled(TraceRecorder* recorder, bool enabled);
 void traceRecorder_clearRuntimeGraph(TraceRecorder* recorder);
 bool traceRecorder_dumpRuntimeGraph(const TraceRecorder* recorder, const char* path);
+void traceRecorder_setRuntimeNotesEnabled(TraceRecorder* recorder, bool enabled);
+void traceRecorder_clearRuntimeNotes(TraceRecorder* recorder);
+bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* path);
 void traceRecorder_formatRecord(const CpuInstructionInfo* info, char* line, size_t lineSize);
 
 #endif
