@@ -269,7 +269,7 @@ static void traceRecorderRecordRuntimeInstruction(TraceRecorder* recorder, const
 
   recorder->runtimeNodes[nodeId].executionCount++;
 
-  if(recorder->runtimeGraphEnabled && recorder->hasPreviousRuntimeNode) {
+  if((recorder->runtimeGraphEnabled || recorder->runtimeNotesEnabled) && recorder->hasPreviousRuntimeNode) {
     const uint64_t edgeKey = ((uint64_t)recorder->previousRuntimeNode << 32) | (uint64_t)nodeId;
     const auto existingEdge = recorder->runtimeEdgeIds.find(edgeKey);
     if(existingEdge != recorder->runtimeEdgeIds.end()) {
