@@ -30,6 +30,9 @@ bool traceRecorder_dumpRuntimeGraph(const TraceRecorder* recorder, const char* p
 void traceRecorder_setRuntimeNotesEnabled(TraceRecorder* recorder, bool enabled);
 void traceRecorder_clearRuntimeNotes(TraceRecorder* recorder);
 bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* path);
+void traceRecorder_setRuntimeWramNotesEnabled(TraceRecorder* recorder, bool enabled);
+void traceRecorder_clearRuntimeWramNotes(TraceRecorder* recorder);
+bool traceRecorder_dumpRuntimeWramNotes(const TraceRecorder* recorder, const char* path);
 void traceRecorder_formatRecord(const CpuInstructionInfo* info, char* line, size_t lineSize);
 
 #endif

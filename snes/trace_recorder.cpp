@@ -2,8 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
+#include <unistd.h>
 
 #include <string>
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -28,12 +31,28 @@ struct RuntimeMemoryAccess {
   uint64_t writeCount;
 };
 
+struct RuntimeWramAccessSource {
+  uint32_t instructionAddress;
+  uint32_t instructionFileOffset;
+  uint64_t readCount;
+  uint64_t writeCount;
+};
+
+struct RuntimeWramAccess {
+  uint32_t wramOffset;
+  uint64_t readCount;
+  uint64_t writeCount;
+  std::vector<RuntimeWramAccessSource> sources;
+  std::unordered_map<uint32_t, size_t> sourceIds;
+};
+
 struct TraceRecorder {
   Snes* snes;
   bool recording;
   bool hookInstalled;
   bool runtimeGraphEnabled;
   bool runtimeNotesEnabled;
+  bool runtimeWramNotesEnabled;
   std::vector<CpuInstructionInfo> records;
   uint8_t* initialStateData;
   int initialStateSize;
@@ -42,6 +61,7 @@ struct TraceRecorder {
   std::unordered_map<std::string, size_t> runtimeNodeIds;
   std::unordered_map<uint64_t, size_t> runtimeEdgeIds;
   std::unordered_map<uint32_t, RuntimeMemoryAccess> runtimeMemoryAccesses;
+  std::unordered_map<uint32_t, RuntimeWramAccess> runtimeWramAccesses;
   bool hasPreviousRuntimeNode;
   size_t previousRuntimeNode;
 };
@@ -49,10 +69,36 @@ struct TraceRecorder {
 static const uint32_t traceMagic = 0x4352544c; // 'LTRC'
 static const uint32_t traceVersion = 1;
 
+static bool traceRecorderDebugEnabled() {
+  static int initialized = 0;
+  static bool enabled = false;
+  if(!initialized) {
+    const char* value = getenv("LAKESNES_TRACE_DEBUG");
+    enabled = value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    initialized = 1;
+  }
+  return enabled;
+}
+
+static void traceRecorderDebugLog(const char* fmt, ...) {
+  if(!traceRecorderDebugEnabled()) {
+    return;
+  }
+
+  fprintf(stderr, "[trace_recorder pid=%ld] ", (long)getpid());
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fprintf(stderr, "\n");
+  fflush(stderr);
+}
+
 static void traceRecorderHook(void* userData, const Cpu* cpu, const CpuInstructionInfo* info);
 static void traceRecorderAccessHook(void* userData, uint32_t adr, uint8_t val, bool write);
 void traceRecorder_clearRuntimeGraph(TraceRecorder* recorder);
 void traceRecorder_clearRuntimeNotes(TraceRecorder* recorder);
+void traceRecorder_clearRuntimeWramNotes(TraceRecorder* recorder);
 
 static bool traceRecorderIsRomAddress(const Snes* snes, uint32_t address) {
   if(snes == NULL || snes->cart == NULL) {
@@ -113,6 +159,54 @@ static bool traceRecorderGetFileOffset(const Snes* snes, uint32_t address, uint3
   }
 
   *fileOffset = romOffset + snes->romFileHeaderSize;
+  return true;
+}
+
+static bool traceRecorderGetWramOffset(uint32_t address, uint32_t* wramOffset) {
+  if(wramOffset == NULL) {
+    return false;
+  }
+
+  const uint8_t bank = (address >> 16) & 0xff;
+  const uint16_t adr = address & 0xffff;
+  if(bank == 0x7e || bank == 0x7f) {
+    *wramOffset = ((uint32_t)(bank & 1) << 16) | adr;
+    return true;
+  }
+  if((bank < 0x40 || (bank >= 0x80 && bank < 0xc0)) && adr < 0x2000) {
+    *wramOffset = adr;
+    return true;
+  }
+  return false;
+}
+
+static bool traceRecorderGetCurrentInstructionSource(
+  const TraceRecorder* recorder,
+  uint32_t* instructionAddress,
+  uint32_t* instructionFileOffset
+) {
+  if(recorder == NULL || recorder->snes == NULL || recorder->snes->cpu == NULL) {
+    return false;
+  }
+
+  const Cpu* cpu = recorder->snes->cpu;
+  if(!cpu_isInstructionTraceActive(cpu)) {
+    return false;
+  }
+
+  const uint32_t currentInstructionAddress = cpu_getCurrentInstructionAddress(cpu);
+  uint32_t currentInstructionFileOffset = 0;
+  if(!traceRecorderIsRomAddress(recorder->snes, currentInstructionAddress) ||
+     !traceRecorderGetFileOffset(recorder->snes, currentInstructionAddress, &currentInstructionFileOffset)) {
+    return false;
+  }
+
+  if(instructionAddress != NULL) {
+    *instructionAddress = currentInstructionAddress;
+  }
+  if(instructionFileOffset != NULL) {
+    *instructionFileOffset = currentInstructionFileOffset;
+  }
   return true;
 }
 
@@ -218,7 +312,10 @@ static void traceRecorderRefreshHook(TraceRecorder* recorder) {
     return;
   }
 
-  const bool wantHook = recorder->recording || recorder->runtimeGraphEnabled || recorder->runtimeNotesEnabled;
+  const bool wantHook = recorder->recording ||
+    recorder->runtimeGraphEnabled ||
+    recorder->runtimeNotesEnabled ||
+    recorder->runtimeWramNotesEnabled;
   if(wantHook == recorder->hookInstalled) {
     return;
   }
@@ -265,6 +362,18 @@ static void traceRecorderRecordRuntimeInstruction(TraceRecorder* recorder, const
     nodeId = recorder->runtimeNodes.size();
     recorder->runtimeNodes.push_back(node);
     recorder->runtimeNodeIds.emplace(key, nodeId);
+    if(nodeId < 16 || node.info.formatted[0] == '\0') {
+      traceRecorderDebugLog(
+        "runtime node[%zu] new addr=%06x file=%s%06x opcode=%02x size=%u mnemonic='%s' formatted='%s'",
+        nodeId,
+        node.info.address & 0xffffff,
+        node.hasFileOffset ? "" : "none:",
+        node.hasFileOffset ? node.fileOffset : 0u,
+        node.info.opcode,
+        node.info.size,
+        node.info.mnemonic,
+        node.info.formatted);
+    }
   }
 
   recorder->runtimeNodes[nodeId].executionCount++;
@@ -281,6 +390,13 @@ static void traceRecorderRecordRuntimeInstruction(TraceRecorder* recorder, const
       edge.executionCount = 1;
       recorder->runtimeEdgeIds.emplace(edgeKey, recorder->runtimeEdges.size());
       recorder->runtimeEdges.push_back(edge);
+      if(recorder->runtimeEdges.size() <= 16) {
+        traceRecorderDebugLog(
+          "runtime edge[%zu] %06x -> %06x",
+          recorder->runtimeEdges.size() - 1,
+          recorder->runtimeNodes[edge.from].info.address & 0xffffff,
+          recorder->runtimeNodes[edge.to].info.address & 0xffffff);
+      }
     }
   }
 
@@ -302,21 +418,58 @@ static void traceRecorderHook(void* userData, const Cpu* cpu, const CpuInstructi
 static void traceRecorderAccessHook(void* userData, uint32_t adr, uint8_t val, bool write) {
   (void) val;
   TraceRecorder* recorder = static_cast<TraceRecorder*>(userData);
-  if(recorder == NULL || !recorder->runtimeNotesEnabled) {
+  if(recorder == NULL) {
     return;
   }
 
-  uint32_t fileOffset = 0;
-  if(!traceRecorderIsRomAddress(recorder->snes, adr) || !traceRecorderGetFileOffset(recorder->snes, adr, &fileOffset)) {
-    return;
+  if(recorder->runtimeNotesEnabled) {
+    uint32_t fileOffset = 0;
+    if(traceRecorderIsRomAddress(recorder->snes, adr) && traceRecorderGetFileOffset(recorder->snes, adr, &fileOffset)) {
+      RuntimeMemoryAccess& access = recorder->runtimeMemoryAccesses[fileOffset];
+      access.fileOffset = fileOffset;
+      if(write) {
+        access.writeCount++;
+      } else {
+        access.readCount++;
+      }
+    }
   }
 
-  RuntimeMemoryAccess& access = recorder->runtimeMemoryAccesses[fileOffset];
-  access.fileOffset = fileOffset;
-  if(write) {
-    access.writeCount++;
-  } else {
-    access.readCount++;
+  if(recorder->runtimeWramNotesEnabled) {
+    uint32_t wramOffset = 0;
+    uint32_t instructionAddress = 0;
+    uint32_t instructionFileOffset = 0;
+    if(traceRecorderGetWramOffset(adr, &wramOffset) &&
+       traceRecorderGetCurrentInstructionSource(recorder, &instructionAddress, &instructionFileOffset)) {
+      RuntimeWramAccess& access = recorder->runtimeWramAccesses[wramOffset];
+      access.wramOffset = wramOffset;
+      if(write) {
+        access.writeCount++;
+      } else {
+        access.readCount++;
+      }
+
+      size_t sourceIndex = 0;
+      const auto existingSource = access.sourceIds.find(instructionFileOffset);
+      if(existingSource != access.sourceIds.end()) {
+        sourceIndex = existingSource->second;
+      } else {
+        RuntimeWramAccessSource source = {};
+        source.instructionAddress = instructionAddress;
+        source.instructionFileOffset = instructionFileOffset;
+        source.readCount = 0;
+        source.writeCount = 0;
+        sourceIndex = access.sources.size();
+        access.sources.push_back(source);
+        access.sourceIds.emplace(instructionFileOffset, sourceIndex);
+      }
+
+      if(write) {
+        access.sources[sourceIndex].writeCount++;
+      } else {
+        access.sources[sourceIndex].readCount++;
+      }
+    }
   }
 }
 
@@ -357,6 +510,7 @@ TraceRecorder* traceRecorder_init(Snes* snes) {
   recorder->hookInstalled = false;
   recorder->runtimeGraphEnabled = false;
   recorder->runtimeNotesEnabled = false;
+  recorder->runtimeWramNotesEnabled = false;
   recorder->initialStateData = NULL;
   recorder->initialStateSize = 0;
   recorder->hasPreviousRuntimeNode = false;
@@ -405,6 +559,7 @@ void traceRecorder_clear(TraceRecorder* recorder) {
   recorder->records.clear();
   traceRecorder_clearRuntimeGraph(recorder);
   traceRecorder_clearRuntimeNotes(recorder);
+  traceRecorder_clearRuntimeWramNotes(recorder);
   free(recorder->initialStateData);
   recorder->initialStateData = NULL;
   recorder->initialStateSize = 0;
@@ -652,6 +807,14 @@ void traceRecorder_setRuntimeNotesEnabled(TraceRecorder* recorder, bool enabled)
   traceRecorderRefreshHook(recorder);
 }
 
+void traceRecorder_setRuntimeWramNotesEnabled(TraceRecorder* recorder, bool enabled) {
+  if(recorder == NULL) {
+    return;
+  }
+  recorder->runtimeWramNotesEnabled = enabled;
+  traceRecorderRefreshHook(recorder);
+}
+
 void traceRecorder_clearRuntimeNotes(TraceRecorder* recorder) {
   if(recorder == NULL) {
     return;
@@ -659,13 +822,28 @@ void traceRecorder_clearRuntimeNotes(TraceRecorder* recorder) {
   recorder->runtimeMemoryAccesses.clear();
 }
 
+void traceRecorder_clearRuntimeWramNotes(TraceRecorder* recorder) {
+  if(recorder == NULL) {
+    return;
+  }
+  recorder->runtimeWramAccesses.clear();
+}
+
 bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* path) {
   if(recorder == NULL || path == NULL) {
     return false;
   }
 
+  traceRecorderDebugLog(
+    "dumpRuntimeNotes path=%s nodes=%zu edges=%zu rom_accesses=%zu",
+    path,
+    recorder->runtimeNodes.size(),
+    recorder->runtimeEdges.size(),
+    recorder->runtimeMemoryAccesses.size());
+
   FILE* file = fopen(path, "w");
   if(file == NULL) {
+    traceRecorderDebugLog("dumpRuntimeNotes fopen failed path=%s", path);
     return false;
   }
 
@@ -682,10 +860,21 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
 
   fprintf(file, "{\n  \"annotations\": [\n");
   bool first = true;
+  size_t dumpedInstructionNotes = 0;
+  size_t dumpedMemoryNotes = 0;
+  size_t emptyFormattedCount = 0;
 
   for(size_t i = 0; i < recorder->runtimeNodes.size(); ++i) {
     const RuntimeGraphNode& node = recorder->runtimeNodes[i];
     if(!node.hasFileOffset || node.info.size == 0) {
+      if(i < 16) {
+        traceRecorderDebugLog(
+          "skip runtime note node[%zu] hasFileOffset=%d size=%u addr=%06x",
+          i,
+          node.hasFileOffset ? 1 : 0,
+          node.info.size,
+          node.info.address & 0xffffff);
+      }
       continue;
     }
 
@@ -706,6 +895,15 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
         node.info.formatted
       );
       note += prefix;
+    }
+    if(node.info.formatted[0] == '\0') {
+      emptyFormattedCount++;
+      traceRecorderDebugLog(
+        "runtime note node[%zu] empty formatted addr=%06x opcode=%02x mnemonic='%s'",
+        i,
+        node.info.address & 0xffffff,
+        node.info.opcode,
+        node.info.mnemonic);
     }
     char color[16];
     traceRecorderMnemonicColor(node.info.mnemonic, color, sizeof(color));
@@ -744,6 +942,15 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
       }
     }
 
+    if(dumpedInstructionNotes < 16 || node.info.formatted[0] == '\0') {
+      traceRecorderDebugLog(
+        "runtime note out[%zu] addr=%06x file=%06x note='%s'",
+        dumpedInstructionNotes,
+        node.info.address & 0xffffff,
+        node.fileOffset,
+        note.c_str());
+    }
+
     fprintf(file, "    {\n");
     fprintf(file, "      \"positions\": [");
     for(uint8_t j = 0; j < node.info.size; ++j) {
@@ -758,6 +965,7 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
     fprintf(file, "\",\n");
     fprintf(file, "      \"color\": \"%s\"\n", color);
     fprintf(file, "    }");
+    dumpedInstructionNotes++;
   }
 
   for(const auto& entry : recorder->runtimeMemoryAccesses) {
@@ -791,6 +999,110 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
     fprintf(file, "      \"positions\": [\"0x%x\"],\n", access.fileOffset);
     fprintf(file, "      \"note\": \"");
     traceRecorderWriteJsonEscaped(file, note);
+    fprintf(file, "\",\n");
+    fprintf(file, "      \"color\": \"%s\"\n", color);
+    fprintf(file, "    }");
+    dumpedMemoryNotes++;
+  }
+
+  fprintf(file, "\n  ]\n}\n");
+  fclose(file);
+  traceRecorderDebugLog(
+    "dumpRuntimeNotes done instruction_notes=%zu memory_notes=%zu empty_formatted=%zu",
+    dumpedInstructionNotes,
+    dumpedMemoryNotes,
+    emptyFormattedCount);
+  return true;
+}
+
+bool traceRecorder_dumpRuntimeWramNotes(const TraceRecorder* recorder, const char* path) {
+  if(recorder == NULL || path == NULL) {
+    return false;
+  }
+
+  FILE* file = fopen(path, "w");
+  if(file == NULL) {
+    return false;
+  }
+
+  std::vector<uint32_t> offsets;
+  offsets.reserve(recorder->runtimeWramAccesses.size());
+  for(const auto& entry : recorder->runtimeWramAccesses) {
+    if(entry.second.readCount == 0 && entry.second.writeCount == 0) {
+      continue;
+    }
+    offsets.push_back(entry.first);
+  }
+  std::sort(offsets.begin(), offsets.end());
+
+  fprintf(file, "{\n  \"annotations\": [\n");
+  bool first = true;
+  for(size_t i = 0; i < offsets.size(); ++i) {
+    const auto accessIt = recorder->runtimeWramAccesses.find(offsets[i]);
+    if(accessIt == recorder->runtimeWramAccesses.end()) {
+      continue;
+    }
+    const RuntimeWramAccess& access = accessIt->second;
+
+    std::vector<const RuntimeWramAccessSource*> sources;
+    sources.reserve(access.sources.size());
+    for(size_t sourceIndex = 0; sourceIndex < access.sources.size(); ++sourceIndex) {
+      sources.push_back(&access.sources[sourceIndex]);
+    }
+    std::sort(sources.begin(), sources.end(), [](const RuntimeWramAccessSource* lhs, const RuntimeWramAccessSource* rhs) {
+      const uint64_t lhsTotal = lhs->readCount + lhs->writeCount;
+      const uint64_t rhsTotal = rhs->readCount + rhs->writeCount;
+      if(lhsTotal != rhsTotal) {
+        return lhsTotal > rhsTotal;
+      }
+      return lhs->instructionFileOffset < rhs->instructionFileOffset;
+    });
+
+    std::string note = "wram access @ $";
+    {
+      char header[128];
+      snprintf(
+        header,
+        sizeof(header),
+        "%05x: reads=%llu writes=%llu",
+        access.wramOffset & 0x1ffff,
+        (unsigned long long)access.readCount,
+        (unsigned long long)access.writeCount);
+      note += header;
+    }
+
+    if(!sources.empty()) {
+      note += " | rom sources: ";
+      for(size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
+        if(sourceIndex != 0) {
+          note += ", ";
+        }
+        const RuntimeWramAccessSource& source = *sources[sourceIndex];
+        char sourceText[160];
+        snprintf(
+          sourceText,
+          sizeof(sourceText),
+          "file@%06x (%06x r=%llu w=%llu)",
+          source.instructionFileOffset & 0xffffff,
+          source.instructionAddress & 0xffffff,
+          (unsigned long long)source.readCount,
+          (unsigned long long)source.writeCount);
+        note += sourceText;
+      }
+    }
+
+    const char* color = access.writeCount > 0
+      ? (access.readCount > 0 ? "#d48cff" : "#ff7f50")
+      : "#f0c94a";
+
+    if(!first) {
+      fprintf(file, ",\n");
+    }
+    first = false;
+    fprintf(file, "    {\n");
+    fprintf(file, "      \"positions\": [\"0x%x\"],\n", access.wramOffset & 0x1ffff);
+    fprintf(file, "      \"note\": \"");
+    traceRecorderWriteJsonEscaped(file, note.c_str());
     fprintf(file, "\",\n");
     fprintf(file, "      \"color\": \"%s\"\n", color);
     fprintf(file, "    }");

@@ -139,12 +139,15 @@ public:
   void setCoprocessorHook(CpuCoprocessorHook hook, void* userData);
   bool runCoprocessorHook();
   void appendInstructionByte(uint8_t value);
+  bool isInstructionTraceActive() const;
+  uint32_t getCurrentInstructionAddress() const;
 
 private:
   CpuInstructionHook instructionHook;
   void* instructionHookUserData;
   CpuCoprocessorHook coprocessorHook;
   void* coprocessorHookUserData;
+  bool tracedInstructionActive;
   uint32_t tracedInstructionAddress;
   bool tracedInstructionMf;
   bool tracedInstructionXf;
@@ -167,5 +170,7 @@ void cpu_setCoprocessorHook(Cpu* cpu, CpuCoprocessorHook hook, void* userData);
 uint8_t cpu_getInstructionSize(uint8_t opcode, bool mf, bool xf);
 void cpu_disassembleInstruction(uint32_t address, bool mf, bool xf, const uint8_t* bytes, uint8_t size, CpuInstructionInfo* info);
 void cpu_setMemViewerEnabled(bool enabled);
+bool cpu_isInstructionTraceActive(const Cpu* cpu);
+uint32_t cpu_getCurrentInstructionAddress(const Cpu* cpu);
 
 #endif

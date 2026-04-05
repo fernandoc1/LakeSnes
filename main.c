@@ -70,6 +70,7 @@ static struct {
   char* traceDisassemblyPath;
   char* runtimeCfgPath;
   char* runtimeNotesPath;
+  char* runtimeWramNotesPath;
   TraceRecorder* traceRecorder;
   bool recordTraceOnStartup;
   void* copLibHandle;
@@ -90,6 +91,7 @@ static void beginTraceRecording(bool fromStartup);
 static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfgMode, const char* outputPath, const char* notesOutputPath);
 static bool loadCoprocessorLibrary(const char* path);
 static void unloadCoprocessorLibrary(void);
+static bool dumpRuntimeWramBinary(const char* jsonPath);
 static void handleCfgStopSignal(int signalNumber);
 static void handleCfgStatusSignal(int signalNumber);
 static void printCfgProgress(void* userData, const RomDisassemblyProgress* progress);
@@ -107,6 +109,7 @@ int main(int argc, char** argv) {
   const char* cfgNotesOutputPath = NULL;
   const char* runtimeCfgOutputPath = NULL;
   const char* runtimeNotesOutputPath = NULL;
+  const char* runtimeWramNotesOutputPath = NULL;
 
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
@@ -165,6 +168,12 @@ int main(int argc, char** argv) {
         return 1;
       }
       runtimeNotesOutputPath = argv[++i];
+    } else if(strcmp(argv[i], "--runtime-wram-notes-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --runtime-wram-notes-out\n");
+        return 1;
+      }
+      runtimeWramNotesOutputPath = argv[++i];
     } else if(romPath == NULL) {
       romPath = argv[i];
     } else {
@@ -275,6 +284,7 @@ int main(int argc, char** argv) {
   glb.traceDisassemblyPath = NULL;
   glb.runtimeCfgPath = runtimeCfgOutputPath != NULL ? strdup(runtimeCfgOutputPath) : NULL;
   glb.runtimeNotesPath = runtimeNotesOutputPath != NULL ? strdup(runtimeNotesOutputPath) : NULL;
+  glb.runtimeWramNotesPath = runtimeWramNotesOutputPath != NULL ? strdup(runtimeWramNotesOutputPath) : NULL;
   glb.traceRecorder = traceRecorder_init(glb.snes);
   glb.copLibHandle = NULL;
   if(copLibPath != NULL && !loadCoprocessorLibrary(copLibPath)) {
@@ -506,6 +516,7 @@ int main(int argc, char** argv) {
   if(glb.traceDisassemblyPath) free(glb.traceDisassemblyPath);
   if(glb.runtimeCfgPath) free(glb.runtimeCfgPath);
   if(glb.runtimeNotesPath) free(glb.runtimeNotesPath);
+  if(glb.runtimeWramNotesPath) free(glb.runtimeWramNotesPath);
   SDL_DestroyTexture(glb.texture);
   SDL_DestroyRenderer(glb.renderer);
   SDL_DestroyWindow(glb.window);
@@ -607,6 +618,14 @@ static void loadRom(const char* path) {
     } else {
       traceRecorder_setRuntimeNotesEnabled(glb.traceRecorder, false);
       traceRecorder_clearRuntimeNotes(glb.traceRecorder);
+    }
+    if(glb.runtimeWramNotesPath != NULL) {
+      traceRecorder_clearRuntimeWramNotes(glb.traceRecorder);
+      traceRecorder_setRuntimeWramNotesEnabled(glb.traceRecorder, true);
+      printf("Started runtime WRAM notes capture to %s\n", glb.runtimeWramNotesPath);
+    } else {
+      traceRecorder_setRuntimeWramNotesEnabled(glb.traceRecorder, false);
+      traceRecorder_clearRuntimeWramNotes(glb.traceRecorder);
     }
   } // else, rom load failed, old rom still loaded
   free(file);
@@ -755,10 +774,23 @@ static void closeRom() {
       printf("Failed to save runtime notes to %s\n", glb.runtimeNotesPath);
     }
   }
+  if(glb.runtimeWramNotesPath != NULL) {
+    if(traceRecorder_dumpRuntimeWramNotes(glb.traceRecorder, glb.runtimeWramNotesPath)) {
+      printf("Saved runtime WRAM notes to %s\n", glb.runtimeWramNotesPath);
+      if(dumpRuntimeWramBinary(glb.runtimeWramNotesPath)) {
+        printf("Saved runtime WRAM binary to %s.bin\n", glb.runtimeWramNotesPath);
+      } else {
+        printf("Failed to save runtime WRAM binary to %s.bin\n", glb.runtimeWramNotesPath);
+      }
+    } else {
+      printf("Failed to save runtime WRAM notes to %s\n", glb.runtimeWramNotesPath);
+    }
+  }
   saveTraceFile(false);
   traceRecorder_end(glb.traceRecorder);
   traceRecorder_setRuntimeGraphEnabled(glb.traceRecorder, false);
   traceRecorder_setRuntimeNotesEnabled(glb.traceRecorder, false);
+  traceRecorder_setRuntimeWramNotesEnabled(glb.traceRecorder, false);
   traceRecorder_clear(glb.traceRecorder);
   int size = snes_saveBattery(glb.snes, NULL);
   if(size > 0) {
@@ -774,6 +806,30 @@ static void closeRom() {
     }
     free(saveData);
   }
+}
+
+static bool dumpRuntimeWramBinary(const char* jsonPath) {
+  if(jsonPath == NULL || glb.snes == NULL) {
+    return false;
+  }
+
+  const size_t pathLength = strlen(jsonPath);
+  char* binPath = (char*)malloc(pathLength + 5);
+  if(binPath == NULL) {
+    return false;
+  }
+  memcpy(binPath, jsonPath, pathLength + 1);
+  memcpy(binPath + pathLength, ".bin", 5);
+
+  FILE* f = fopen(binPath, "wb");
+  free(binPath);
+  if(f == NULL) {
+    return false;
+  }
+
+  const bool ok = fwrite(glb.snes->ram, SNES_RAM_SIZE, 1, f) == 1;
+  fclose(f);
+  return ok;
 }
 
 static bool saveTraceFile(bool verbose) {

@@ -74,6 +74,7 @@ Cpu::Cpu(Snes* snes, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler 
       instructionHookUserData(nullptr),
       coprocessorHook(nullptr),
       coprocessorHookUserData(nullptr),
+      tracedInstructionActive(false),
       tracedInstructionAddress(0),
       tracedInstructionMf(false),
       tracedInstructionXf(false),
@@ -2703,6 +2704,7 @@ static void cpu_splitInstructionText(const char* formatted, CpuInstructionInfo* 
 }
 
 void Cpu::beginInstructionTrace() {
+  tracedInstructionActive = true;
   tracedInstructionAddress = (k << 16) | pc.raw();
   tracedInstructionMf = mf;
   tracedInstructionXf = xf;
@@ -2717,6 +2719,7 @@ void Cpu::appendInstructionByte(uint8_t value) {
 }
 
 void Cpu::emitInstructionTrace() {
+  tracedInstructionActive = false;
   if(instructionHook == nullptr || tracedInstructionSize == 0) {
     return;
   }
@@ -2731,6 +2734,14 @@ void Cpu::emitInstructionTrace() {
     &info
   );
   instructionHook(instructionHookUserData, this, &info);
+}
+
+bool Cpu::isInstructionTraceActive() const {
+  return tracedInstructionActive;
+}
+
+uint32_t Cpu::getCurrentInstructionAddress() const {
+  return tracedInstructionActive ? tracedInstructionAddress : 0;
 }
 
 static void cpu_decodeInstruction(
@@ -2812,4 +2823,12 @@ static void cpu_decodeInstruction(
       *p = static_cast<char>(*p - ('a' - 'A'));
     }
   }
+}
+
+bool cpu_isInstructionTraceActive(const Cpu* cpu) {
+  return cpu != nullptr && cpu->isInstructionTraceActive();
+}
+
+uint32_t cpu_getCurrentInstructionAddress(const Cpu* cpu) {
+  return cpu != nullptr ? cpu->getCurrentInstructionAddress() : 0;
 }
