@@ -739,7 +739,7 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
         }
 
         char link[256];
-        snprintf(link, sizeof(link), "[[jump:0x%x|%s]]", target.fileOffset, targetLabel);
+        snprintf(link, sizeof(link), "[[0x%x|%s]]", target.fileOffset, targetLabel);
         note += link;
       }
     }

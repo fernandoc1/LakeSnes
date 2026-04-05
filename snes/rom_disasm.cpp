@@ -594,7 +594,7 @@ static std::string rom_disasm_noteTextForNode(const Snes* snes, const RomAnalysi
     note += " ";
     if(rom_disasm_directTarget(node.info, &targetAddress) && rom_disasm_getFileOffset(snes, targetAddress, &targetFileOffset)) {
       char link[96];
-      snprintf(link, sizeof(link), "[[jump:0x%x|%s]]", targetFileOffset, node.info.operands);
+      snprintf(link, sizeof(link), "[[0x%x|%s]]", targetFileOffset, node.info.operands);
       note += link;
     } else {
       note += node.info.operands;
