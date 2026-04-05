@@ -190,6 +190,29 @@ static void traceRecorderMnemonicColor(const char* mnemonic, char* color, size_t
   snprintf(color, colorSize, "#%02x%02x%02x", r & 0xffu, g & 0xffu, b & 0xffu);
 }
 
+static bool traceRecorderIsControlFlowOpcode(uint8_t opcode) {
+  switch(opcode) {
+    case 0x10: // bpl
+    case 0x20: // jsr
+    case 0x22: // jsl
+    case 0x30: // bmi
+    case 0x4c: // jmp
+    case 0x50: // bvc
+    case 0x5c: // jml
+    case 0x70: // bvs
+    case 0x80: // bra
+    case 0x82: // brl
+    case 0x90: // bcc
+    case 0xb0: // bcs
+    case 0xd0: // bne
+    case 0xf0: // beq
+    case 0xfc: // jsr (abs,x)
+      return true;
+    default:
+      return false;
+  }
+}
+
 static void traceRecorderRefreshHook(TraceRecorder* recorder) {
   if(recorder == NULL || recorder->snes == NULL || recorder->snes->cpu == NULL) {
     return;
@@ -671,17 +694,55 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
     }
     first = false;
 
-    char note[192];
+    std::string note = "executed ";
+    {
+      char prefix[192];
+      snprintf(
+        prefix,
+        sizeof(prefix),
+        "%llu x: %06x: %s",
+        (unsigned long long)node.executionCount,
+        node.info.address & 0xffffff,
+        node.info.formatted
+      );
+      note += prefix;
+    }
     char color[16];
-    snprintf(
-      note,
-      sizeof(note),
-      "executed %llu x: %06x: %s",
-      (unsigned long long)node.executionCount,
-      node.info.address & 0xffffff,
-      node.info.formatted
-    );
     traceRecorderMnemonicColor(node.info.mnemonic, color, sizeof(color));
+
+    if(traceRecorderIsControlFlowOpcode(node.info.opcode)) {
+      bool firstTarget = true;
+      for(size_t edgeIndex = 0; edgeIndex < recorder->runtimeEdges.size(); ++edgeIndex) {
+        const RuntimeGraphEdge& edge = recorder->runtimeEdges[edgeIndex];
+        if(edge.from != i || edge.to >= recorder->runtimeNodes.size()) {
+          continue;
+        }
+        const RuntimeGraphNode& target = recorder->runtimeNodes[edge.to];
+        if(!target.hasFileOffset) {
+          continue;
+        }
+
+        char targetLabel[160];
+        snprintf(
+          targetLabel,
+          sizeof(targetLabel),
+          "%06x: %s (%llu x)",
+          target.info.address & 0xffffff,
+          target.info.formatted,
+          (unsigned long long)edge.executionCount
+        );
+        if(firstTarget) {
+          note += " -> ";
+          firstTarget = false;
+        } else {
+          note += ", ";
+        }
+
+        char link[256];
+        snprintf(link, sizeof(link), "[[jump:0x%x|%s]]", target.fileOffset, targetLabel);
+        note += link;
+      }
+    }
 
     fprintf(file, "    {\n");
     fprintf(file, "      \"positions\": [");
@@ -693,7 +754,7 @@ bool traceRecorder_dumpRuntimeNotes(const TraceRecorder* recorder, const char* p
     }
     fprintf(file, "],\n");
     fprintf(file, "      \"note\": \"");
-    traceRecorderWriteJsonEscaped(file, note);
+    traceRecorderWriteJsonEscaped(file, note.c_str());
     fprintf(file, "\",\n");
     fprintf(file, "      \"color\": \"%s\"\n", color);
     fprintf(file, "    }");
