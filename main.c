@@ -95,6 +95,7 @@ static bool dumpRuntimeWramBinary(const char* jsonPath);
 static void handleCfgStopSignal(int signalNumber);
 static void handleCfgStatusSignal(int signalNumber);
 static void printCfgProgress(void* userData, const RomDisassemblyProgress* progress);
+static void registerMemoryAccessCallbackFromLibrary(void* userData, uint32_t adr, SnesMemoryAccessCallback callback, void* callbackUserData);
 
 static volatile sig_atomic_t g_cfgStopRequested = 0;
 static volatile sig_atomic_t g_cfgStatusRequested = 0;
@@ -961,6 +962,16 @@ static bool loadCoprocessorLibrary(const char* path) {
   }
 
   cpu_setCoprocessorHook(glb.snes->cpu, reinterpret_cast<CpuCoprocessorHook>(symbol), NULL);
+
+  void* registrationSymbol = dlsym(glb.copLibHandle, LAKESNES_MEMORY_ACCESS_CALLBACK_REGISTRATION_SYMBOL);
+  if(registrationSymbol != NULL) {
+    reinterpret_cast<LakesnesMemoryAccessCallbackRegistrationHook>(registrationSymbol)(
+      glb.snes,
+      registerMemoryAccessCallbackFromLibrary,
+      NULL
+    );
+    printf("Registered memory access callbacks from %s\n", path);
+  }
   printf("Loaded coprocessor library %s\n", path);
   return true;
 #endif
@@ -970,12 +981,26 @@ static void unloadCoprocessorLibrary(void) {
 #ifndef _WIN32
   if(glb.snes != NULL) {
     cpu_setCoprocessorHook(glb.snes->cpu, NULL, NULL);
+    snes_clearMemoryAccessCallbacks(glb.snes);
   }
   if(glb.copLibHandle != NULL) {
     dlclose(glb.copLibHandle);
     glb.copLibHandle = NULL;
   }
 #endif
+}
+
+static void registerMemoryAccessCallbackFromLibrary(
+  void* userData,
+  uint32_t adr,
+  SnesMemoryAccessCallback callback,
+  void* callbackUserData
+) {
+  (void) userData;
+  if(glb.snes == NULL) {
+    return;
+  }
+  snes_setMemoryAccessCallback(glb.snes, adr, callback, callbackUserData);
 }
 
 static uint8_t* readFile(const char* name, int* length) {

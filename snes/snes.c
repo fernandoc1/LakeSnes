@@ -26,6 +26,19 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
 static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set open bus
 static int snes_getAccessTime(Snes* snes, uint32_t adr);
 
+#define SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS 8
+#define SNES_MEMORY_ACCESS_CALLBACK_PAGE_SIZE (1u << SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS)
+#define SNES_MEMORY_ACCESS_CALLBACK_PAGE_MASK (SNES_MEMORY_ACCESS_CALLBACK_PAGE_SIZE - 1u)
+#define SNES_MEMORY_ACCESS_CALLBACK_PAGE_COUNT (1u << (24 - SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS))
+
+typedef struct {
+  SnesMemoryAccessCallback callbacks[SNES_MEMORY_ACCESS_CALLBACK_PAGE_SIZE];
+  void* userData[SNES_MEMORY_ACCESS_CALLBACK_PAGE_SIZE];
+  uint16_t usedCount;
+} SnesMemoryAccessCallbackPage;
+
+static void snes_dispatchMemoryAccessCallback(Snes* snes, uint32_t adr, uint8_t val, bool write);
+
 Snes* snes_init(void) {
   Snes* snes = (Snes*)malloc(sizeof(Snes));
   snes->cpu = cpu_init(snes, snes_cpuRead, snes_cpuWrite, snes_cpuIdle);
@@ -40,10 +53,13 @@ Snes* snes_init(void) {
   snes->romFileHeaderSize = 0;
   snes->accessHook = NULL;
   snes->accessHookUserData = NULL;
+  snes->memoryAccessCallbackPages = NULL;
+  snes->memoryAccessCallbackCount = 0;
   return snes;
 }
 
 void snes_free(Snes* snes) {
+  snes_clearMemoryAccessCallbacks(snes);
   cpu_free(snes->cpu);
   apu_free(snes->apu);
   dma_free(snes->dma);
@@ -502,6 +518,7 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   if(snes->accessHook != NULL) {
     snes->accessHook(snes->accessHookUserData, fullAdr, val, true);
   }
+  snes_dispatchMemoryAccessCallback(snes, fullAdr, val, true);
 }
 
 static int snes_getAccessTime(Snes* snes, uint32_t adr) {
@@ -523,6 +540,7 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
   if(snes->accessHook != NULL) {
     snes->accessHook(snes->accessHookUserData, adr & 0xffffff, val, false);
   }
+  snes_dispatchMemoryAccessCallback(snes, adr & 0xffffff, val, false);
   return val;
 }
 
@@ -551,6 +569,98 @@ void snes_setAccessHook(Snes* snes, SnesAccessHook hook, void* userData) {
   }
   snes->accessHook = hook;
   snes->accessHookUserData = userData;
+}
+
+void snes_setMemoryAccessCallback(Snes* snes, uint32_t adr, SnesMemoryAccessCallback callback, void* userData) {
+  if(snes == NULL) {
+    return;
+  }
+  adr &= 0xffffff;
+  const uint32_t pageIndex = adr >> SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS;
+  const uint32_t entryIndex = adr & SNES_MEMORY_ACCESS_CALLBACK_PAGE_MASK;
+
+  if(callback == NULL) {
+    if(snes->memoryAccessCallbackPages == NULL) {
+      return;
+    }
+    SnesMemoryAccessCallbackPage* page =
+      (SnesMemoryAccessCallbackPage*) snes->memoryAccessCallbackPages[pageIndex];
+    if(page == NULL || page->callbacks[entryIndex] == NULL) {
+      return;
+    }
+    page->callbacks[entryIndex] = NULL;
+    page->userData[entryIndex] = NULL;
+    if(page->usedCount > 0) {
+      page->usedCount--;
+    }
+    if(snes->memoryAccessCallbackCount > 0) {
+      snes->memoryAccessCallbackCount--;
+    }
+    if(page->usedCount == 0) {
+      free(page);
+      snes->memoryAccessCallbackPages[pageIndex] = NULL;
+    }
+    return;
+  }
+
+  if(snes->memoryAccessCallbackPages == NULL) {
+    snes->memoryAccessCallbackPages =
+      (void**) calloc(SNES_MEMORY_ACCESS_CALLBACK_PAGE_COUNT, sizeof(void*));
+    if(snes->memoryAccessCallbackPages == NULL) {
+      return;
+    }
+  }
+
+  SnesMemoryAccessCallbackPage* page =
+    (SnesMemoryAccessCallbackPage*) snes->memoryAccessCallbackPages[pageIndex];
+  if(page == NULL) {
+    page = (SnesMemoryAccessCallbackPage*) calloc(1, sizeof(SnesMemoryAccessCallbackPage));
+    if(page == NULL) {
+      return;
+    }
+    snes->memoryAccessCallbackPages[pageIndex] = page;
+  }
+
+  if(page->callbacks[entryIndex] == NULL) {
+    page->usedCount++;
+    snes->memoryAccessCallbackCount++;
+  }
+  page->callbacks[entryIndex] = callback;
+  page->userData[entryIndex] = userData;
+}
+
+void snes_clearMemoryAccessCallbacks(Snes* snes) {
+  if(snes == NULL || snes->memoryAccessCallbackPages == NULL) {
+    return;
+  }
+
+  for(uint32_t i = 0; i < SNES_MEMORY_ACCESS_CALLBACK_PAGE_COUNT; ++i) {
+    free(snes->memoryAccessCallbackPages[i]);
+  }
+  free(snes->memoryAccessCallbackPages);
+  snes->memoryAccessCallbackPages = NULL;
+  snes->memoryAccessCallbackCount = 0;
+}
+
+static void snes_dispatchMemoryAccessCallback(Snes* snes, uint32_t adr, uint8_t val, bool write) {
+  if(snes->memoryAccessCallbackCount == 0 || snes->memoryAccessCallbackPages == NULL) {
+    return;
+  }
+
+  const uint32_t maskedAdr = adr & 0xffffff;
+  const uint32_t pageIndex = maskedAdr >> SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS;
+  SnesMemoryAccessCallbackPage* page =
+    (SnesMemoryAccessCallbackPage*) snes->memoryAccessCallbackPages[pageIndex];
+  if(page == NULL) {
+    return;
+  }
+
+  const uint32_t entryIndex = maskedAdr & SNES_MEMORY_ACCESS_CALLBACK_PAGE_MASK;
+  SnesMemoryAccessCallback callback = page->callbacks[entryIndex];
+  if(callback == NULL) {
+    return;
+  }
+  callback(page->userData[entryIndex], snes, maskedAdr, val, write);
 }
 
 // debugging

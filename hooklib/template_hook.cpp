@@ -9,11 +9,40 @@
 // Run:
 //   ./lakesnes --cop-lib ./hooklib/libhooklib.so game.sfc
 //
+// Optional startup registration:
+//   If this library exports lakesnes_register_memory_access_callback(),
+//   LakeSnes will call it once during startup so you can register
+//   per-address bus callbacks.
+//
 // Protocol:
 //   COP #$xx sets the base address.
 //   WDM #$yy appends payload bytes starting at that base address.
 //   STP dispatches this function.
 //
+static void onWram1600Access(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
+  const char* label = static_cast<const char*>(userData);
+  const uint32_t pc = cpu_getCurrentInstructionAddress(snes->cpu);
+  fprintf(
+    stderr,
+    "hooklib: %s %s at %06x value=%02x pc=%06x\n",
+    label != NULL ? label : "memory callback",
+    write ? "write" : "read",
+    adr & 0xffffff,
+    val,
+    pc);
+}
+
+extern "C" void lakesnes_register_memory_access_callback(
+  Snes* snes,
+  LakesnesMemoryAccessCallbackRegistrar registrar,
+  void* registrarUserData
+) {
+  (void) snes;
+  registrar(registrarUserData, 0x7e1600, onWram1600Access, (void*) "watch $7E1600");
+  registrar(registrarUserData, 0x7e1601, onWram1600Access, (void*) "watch $7E1601");
+  fprintf(stderr, "hooklib: registered memory access callbacks for $7E1600-$7E1601\n");
+}
+
 // Exported symbol name must match LAKESNES_COPROCESSOR_HOOK_SYMBOL.
 extern "C" bool lakesnes_cop_execute(
   void* userData,

@@ -7,6 +7,11 @@
 
 typedef struct Snes Snes;
 typedef void (*SnesAccessHook)(void* userData, uint32_t adr, uint8_t val, bool write);
+typedef void (*SnesMemoryAccessCallback)(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write);
+typedef void (*LakesnesMemoryAccessCallbackRegistrar)(void* userData, uint32_t adr, SnesMemoryAccessCallback callback, void* callbackUserData);
+typedef void (*LakesnesMemoryAccessCallbackRegistrationHook)(Snes* snes, LakesnesMemoryAccessCallbackRegistrar registrar, void* registrarUserData);
+
+#define LAKESNES_MEMORY_ACCESS_CALLBACK_REGISTRATION_SYMBOL "lakesnes_register_memory_access_callback"
 
 #include "cpu.h"
 #include "apu.h"
@@ -66,6 +71,8 @@ struct Snes {
   uint32_t romFileHeaderSize;
   SnesAccessHook accessHook;
   void* accessHookUserData;
+  void** memoryAccessCallbackPages;
+  uint32_t memoryAccessCallbackCount;
 };
 
 Snes* snes_init(void);
@@ -101,5 +108,7 @@ bool snes_loadBattery(Snes* snes, uint8_t* data, int size);
 int snes_saveState(Snes* snes, uint8_t* data);
 bool snes_loadState(Snes* snes, uint8_t* data, int size);
 void snes_setAccessHook(Snes* snes, SnesAccessHook hook, void* userData);
+void snes_setMemoryAccessCallback(Snes* snes, uint32_t adr, SnesMemoryAccessCallback callback, void* userData);
+void snes_clearMemoryAccessCallbacks(Snes* snes);
 
 #endif
