@@ -22,7 +22,7 @@ static bool ff6_handleFillPartyData(Snes* snes) {
 
     uint8_t* mem = (uint8_t*)snes->ram;
     
-    //mem[0x1600] = 0x00;
+mem[0x1600] = 0x00;
 mem[0x1602] = 0xBF;
 mem[0x1603] = 0xBF;
 mem[0x1604] = 0xBF;
@@ -216,6 +216,29 @@ static bool cpy__ff6_handleFillPartyData(Snes* snes) {
   memcpy(snes->ram + 0x1600, testData + 0x1600, 0x500);
   //memcpy(snes->ram + 0x6400, testData + 0x6400, 0x0200);
   return true;
+}
+
+static void onWram1600Access(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
+  const char* label = static_cast<const char*>(userData);
+  const uint32_t pc = cpu_getCurrentInstructionAddress(snes->cpu);
+  fprintf(
+    stderr,
+    "hooklib: %s %s at %06x value=%02x pc=%06x\n",
+    label != NULL ? label : "memory callback",
+    write ? "write" : "read",
+    adr & 0xffffff,
+    val,
+    pc);
+}
+
+extern "C" void lakesnes_register_memory_access_callback(
+  Snes* snes,
+  LakesnesMemoryAccessCallbackRegistrar registrar,
+  void* registrarUserData
+) {
+  (void) snes;
+  registrar(registrarUserData, 0x7e1600, onWram1600Access, (void*) "watch $7E1600");
+  fprintf(stderr, "hooklib: registered memory access callbacks for $7E1600-$7E1601\n");
 }
 
 extern "C" bool lakesnes_cop_execute(
