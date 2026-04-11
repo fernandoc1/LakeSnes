@@ -18,7 +18,7 @@
 // Main function (FULLY SELF-CONTAINED)
 // ----------------------------------------
 static bool ff6_handleFillPartyData(Snes* snes) {
-    if (!snes || !snes->ram) return false;
+    if (!snes) return false;
 
     uint8_t* mem = (uint8_t*)snes->ram;
     
@@ -142,80 +142,11 @@ mem[0x2092] = 0x2D;
 mem[0x2093] = 0x7F;
 mem[0x2094] = 0x21;
 mem[0x2095] = 0x05;
-fprintf(stderr, "hooklib_ff6: filling party data in RAM\n");
-//mem[0x2099] = 0x00;
-//mem[0x209D] = 0x00;
-//mem[0x209E] = 0x00;
 mem[0x209F] = 0x7F;
 mem[0x20A0] = 0x61;
 mem[0x20A1] = 0x04;
-//mem[0x20A5] = 0x00;
-//mem[0x20A9] = 0x00;
-//mem[0x20AD] = 0x00;
-//mem[0x20B1] = 0x00;
-//mem[0x20B5] = 0x00;
-//mem[0x20B9] = 0x00;
-//mem[0x20BD] = 0x00;
-//mem[0x20C1] = 0x00;
-//mem[0x20C5] = 0x00;
-//mem[0x20C9] = 0x00;
-//mem[0x20CD] = 0x00;
-//mem[0x20D1] = 0x00;
-//mem[0x20D5] = 0x00;
-//mem[0x20D9] = 0x00;
-//mem[0x20DD] = 0x00;
-//mem[0x20E1] = 0x00;
-//mem[0x20E5] = 0x00;
-//mem[0x20E9] = 0x00;
-//mem[0x20ED] = 0x00;
-//mem[0x20F1] = 0x00;
-//mem[0x20F5] = 0x00;
-//mem[0x20F9] = 0x00;
-//mem[0x20FD] = 0x00;
 
     return true;
-}
-
-static bool ff6_handleFunction05(Snes* snes) {
-  fprintf(stderr, "hooklib_ff6: function 05 called\n");
-  return true;
-
-
-  //Dump RAM for debugging in /tmp/
-  //Create a unique filename based on the current time
-  char filename[256];
-  snprintf(filename, sizeof(filename), "/tmp/ff6_ram_dump_%lu.bin", (unsigned long)time(NULL));
-  FILE* f = fopen(filename, "wb");
-  if(f) {
-    fwrite(snes->ram, 1, SNES_RAM_SIZE, f);
-    fclose(f);
-    fprintf(stderr, "hooklib_ff6: RAM dumped to %s\n", filename);
-  } else {
-    fprintf(stderr, "hooklib_ff6: failed to dump RAM to %s\n",  filename);
-  }
-  return true;
-}
-
-static bool cpy__ff6_handleFillPartyData(Snes* snes) {
-  fprintf(stderr, "hooklib_ff6: function 07 called\n");
-  //return true;
-
-  //Load ram from file for testing
-  char filename[256];
-  uint8_t testData[SNES_RAM_SIZE] = {0};
-  snprintf(filename, sizeof(filename), "/tmp/ff6_ram_dump.bin");
-  FILE* f = fopen(filename, "rb");
-  if(f) {
-    fread(testData, 1, SNES_RAM_SIZE, f);
-    fclose(f);
-    fprintf(stderr, "hooklib_ff6: RAM loaded from %s\n", filename);
-  } else {
-    fprintf(stderr, "hooklib_ff6: failed to load RAM from %s\n", filename);
-  }
-  //memcpy(snes->ram + 0x1600, testData + 0x1600, 0x450);
-  memcpy(snes->ram + 0x1600, testData + 0x1600, 0x500);
-  //memcpy(snes->ram + 0x6400, testData + 0x6400, 0x0200);
-  return true;
 }
 
 static void onWram1600Access(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
@@ -272,15 +203,8 @@ extern "C" bool lakesnes_cop_execute(
   }
 
   switch(data[0]) {
-    //case 0x01:
-    //  snes->cpu->stopped = false;
-    //  return ff6_handleFunction01(snes);
-    case 0x05:
-      snes->cpu->stopped = false;
-      return ff6_handleFunction05(snes);
     case 0x07:
       snes->cpu->stopped = false;
-      //return ff6_handleFunction07(snes);
       return ff6_handleFillPartyData(snes);
     default:
       fprintf(stderr, "hooklib_ff6: unknown function id %02x\n", data[0]);
