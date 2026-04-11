@@ -23,6 +23,7 @@ static bool ff6_handleFillPartyData(Snes* snes) {
     uint8_t* mem = (uint8_t*)snes->ram;
     
 mem[0x1600] = 0x00;
+mem[0x1601] = 0x04; //Defines the first character in the party.
 mem[0x1602] = 0xBF;
 mem[0x1603] = 0xBF;
 mem[0x1604] = 0xBF;
@@ -149,7 +150,7 @@ mem[0x20A1] = 0x04;
     return true;
 }
 
-static void onWram1600Access(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
+static void onWramAccess(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
   const char* label = static_cast<const char*>(userData);
   const uint32_t pc = cpu_getCurrentInstructionAddress(snes->cpu);
   uint32_t fileOffset = 0;
@@ -183,8 +184,9 @@ extern "C" void lakesnes_register_memory_access_callback(
   void* registrarUserData
 ) {
   (void) snes;
-  registrar(registrarUserData, 0x7e1600, onWram1600Access, (void*) "watch $7E1600");
-  fprintf(stderr, "hooklib: registered memory access callbacks for $7E1600-$7E1601\n");
+  registrar(registrarUserData, 0x7e1600, onWramAccess, (void*) "watch $7E1600");
+  registrar(registrarUserData, 0x7e1601, onWramAccess, (void*) "watch $7E1601");
+  registrar(registrarUserData, 0x7e1602, onWramAccess, (void*) "watch $7E1602");
 }
 
 extern "C" bool lakesnes_cop_execute(
@@ -206,6 +208,9 @@ extern "C" bool lakesnes_cop_execute(
     case 0x07:
       snes->cpu->stopped = false;
       return ff6_handleFillPartyData(snes);
+    case 0x09:
+      fprintf(stderr, "hooklib_ff6: Battle end!\n");
+      return true;
     default:
       fprintf(stderr, "hooklib_ff6: unknown function id %02x\n", data[0]);
       return false;

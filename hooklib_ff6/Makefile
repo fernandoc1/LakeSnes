@@ -1,7 +1,7 @@
 PKG_CONFIG ?= pkg-config
 
 CXX := g++
-CXXFLAGS := -std=c++20 -Wall -Wextra -O2 -fPIC -I../snes -I../zip -I../mem_viewer
+CXXFLAGS := -g -std=c++20 -Wall -Wextra -O2 -fPIC -I../snes -I../zip -I../mem_viewer
 LDFLAGS := -shared
 TARGET := libhooklib_ff6.so
 SOURCES := ff6_hook.cpp
