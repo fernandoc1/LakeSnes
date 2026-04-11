@@ -221,14 +221,29 @@ static bool cpy__ff6_handleFillPartyData(Snes* snes) {
 static void onWram1600Access(void* userData, Snes* snes, uint32_t adr, uint8_t val, bool write) {
   const char* label = static_cast<const char*>(userData);
   const uint32_t pc = cpu_getCurrentInstructionAddress(snes->cpu);
-  fprintf(
-    stderr,
-    "hooklib: %s %s at %06x value=%02x pc=%06x\n",
-    label != NULL ? label : "memory callback",
-    write ? "write" : "read",
-    adr & 0xffffff,
-    val,
-    pc);
+  uint32_t fileOffset = 0;
+  const bool hasFileOffset = snes_getRomFileOffset(snes, pc, &fileOffset);
+  if(hasFileOffset) {
+    fprintf(
+      stderr,
+      "hooklib: %s %s at %06x value=%02x pc=%06x file@%06x\n",
+      label != NULL ? label : "memory callback",
+      write ? "write" : "read",
+      adr & 0xffffff,
+      val,
+      pc,
+      fileOffset);
+    return;
+  } else {
+    fprintf(
+      stderr,
+      "hooklib: %s %s at %06x value=%02x pc=%06x no file offset\n",
+      label != NULL ? label : "memory callback",
+      write ? "write" : "read",
+      adr & 0xffffff,
+      val,
+      pc);
+  }
 }
 
 extern "C" void lakesnes_register_memory_access_callback(

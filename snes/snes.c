@@ -544,6 +544,49 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
   return val;
 }
 
+bool snes_getRomFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOffset) {
+  if(snes == NULL || snes->cart == NULL || fileOffset == NULL) {
+    return false;
+  }
+
+  uint32_t romOffset = 0;
+  const uint8_t bank = (address >> 16) & 0xff;
+  const uint16_t adr = address & 0xffff;
+
+  switch(snes->cart->type) {
+    case 1: {
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = ((bankMasked << 15) | (adr & 0x7fff)) & (snes->cart->romSize - 1);
+      break;
+    }
+    case 2: {
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = (((bankMasked & 0x3f) << 16) | adr) & (snes->cart->romSize - 1);
+      break;
+    }
+    case 3: {
+      const bool secondHalf = bank < 0x80;
+      const uint8_t bankMasked = bank & 0x7f;
+      if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
+        return false;
+      }
+      romOffset = (((bankMasked & 0x3f) << 16) | (secondHalf ? 0x400000 : 0) | adr) & (snes->cart->romSize - 1);
+      break;
+    }
+    default:
+      return false;
+  }
+
+  *fileOffset = romOffset + snes->romFileHeaderSize;
+  return true;
+}
+
 void snes_cpuIdle(Snes* snes, bool waiting) {
   dma_handleDma(snes->dma, 6);
   snes_runCycles(snes, 6);

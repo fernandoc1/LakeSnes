@@ -87,6 +87,7 @@ uint8_t snes_readBBus(Snes* snes, uint8_t adr);
 void snes_writeBBus(Snes* snes, uint8_t adr, uint8_t val);
 uint8_t snes_read(Snes* snes, uint32_t adr);
 void snes_write(Snes* snes, uint32_t adr, uint8_t val);
+bool snes_getRomFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOffset);
 void snes_cpuIdle(Snes* snes, bool waiting);
 uint8_t snes_cpuRead(Snes* snes, uint32_t adr);
 void snes_cpuWrite(Snes* snes, uint32_t adr, uint8_t val);
