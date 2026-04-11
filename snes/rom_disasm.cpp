@@ -694,6 +694,128 @@ static void rom_disasm_reportProgress(
   control->statusCallback(control->userData, &progress);
 }
 
+static bool rom_disasm_collectReachableNodes(
+  Snes* snes,
+  int instructionLimit,
+  std::vector<RomAnalysisNode>* nodes
+) {
+  if(snes == NULL || nodes == NULL || instructionLimit < 0) {
+    return false;
+  }
+
+  RomAnalysisState initialState = {};
+  initialState.address = snes_read(snes, 0xfffc) | (snes_read(snes, 0xfffd) << 8);
+  initialState.e = true;
+  initialState.mf = true;
+  initialState.xf = true;
+  initialState.c = false;
+  initialState.cKnown = true;
+  initialState.callTargetStack.push_back(initialState.address);
+
+  std::unordered_map<std::string, size_t> nodeLookup;
+  std::vector<size_t> worklist;
+  std::unordered_map<uint32_t, size_t> addressContextCounts;
+  std::vector<RomAnalysisEdge> edges;
+  std::unordered_set<std::string> edgeSet;
+  std::unordered_map<std::string, size_t> syntheticLookup;
+  size_t contextLimitCount = 0;
+
+  if(!rom_disasm_isRomAddress(snes, initialState.address)) {
+    return false;
+  }
+  if(rom_disasm_getOrCreateNode(snes, initialState, instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts) == kNodeLimitReached) {
+    return false;
+  }
+
+  for(size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+    const size_t nodeIndex = worklist[cursor];
+    const RomAnalysisNode& node = (*nodes)[nodeIndex];
+    const RomAnalysisState nextState = rom_disasm_advanceState(node.state, node.info);
+
+    switch(node.info.opcode) {
+      case 0x10:
+      case 0x30:
+      case 0x50:
+      case 0x70:
+      case 0x90:
+      case 0xb0:
+      case 0xd0:
+      case 0xf0: {
+        RomAnalysisState branchState = nextState;
+        branchState.address = rom_disasm_relativeTarget(node.info);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "branch", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x80: {
+        RomAnalysisState branchState = nextState;
+        branchState.address = rom_disasm_relativeTarget(node.info);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x82: {
+        RomAnalysisState branchState = nextState;
+        branchState.address = rom_disasm_relativeLongTarget(node.info);
+        rom_disasm_enqueueSuccessor(snes, branchState, nodeIndex, "jump", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x20:
+      case 0x22: {
+        RomAnalysisState callState = nextState;
+        callState.address = node.info.opcode == 0x20
+          ? rom_disasm_absoluteTarget(node.info)
+          : rom_disasm_longTarget(node.info);
+        if(callState.callTargetStack.size() < kMaxCallStackDepth && !rom_disasm_callStackContains(node.state, callState.address)) {
+          callState.returnStack.push_back(rom_disasm_makeReturnFrame(node.info.address, nextState.address));
+          callState.callTargetStack.push_back(callState.address);
+          rom_disasm_enqueueSuccessor(snes, callState, nodeIndex, "call", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        }
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x4c: {
+        RomAnalysisState jumpState = nextState;
+        jumpState.address = rom_disasm_absoluteTarget(node.info);
+        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x5c: {
+        RomAnalysisState jumpState = nextState;
+        jumpState.address = rom_disasm_longTarget(node.info);
+        rom_disasm_enqueueSuccessor(snes, jumpState, nodeIndex, "jump", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+      }
+      case 0x60:
+      case 0x6b:
+        if(!node.state.returnStack.empty()) {
+          RomAnalysisState returnState = node.state;
+          returnState.address = rom_disasm_getReturnAddress(returnState.returnStack.back());
+          returnState.returnStack.pop_back();
+          if(!returnState.callTargetStack.empty()) {
+            returnState.callTargetStack.pop_back();
+          }
+          rom_disasm_enqueueSuccessor(snes, returnState, nodeIndex, "return", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        }
+        break;
+      case 0x00:
+      case 0x02:
+      case 0x40:
+      case 0xcb:
+      case 0xdb:
+      case 0x6c:
+      case 0x7c:
+      case 0xdc:
+      case 0xfc:
+        break;
+      default:
+        rom_disasm_enqueueSuccessor(snes, nextState, nodeIndex, "fallthrough", instructionLimit, nodes, &nodeLookup, &worklist, &addressContextCounts, &syntheticLookup, &edges, &edgeSet, &contextLimitCount);
+        break;
+    }
+  }
+
+  return true;
+}
+
 static bool rom_disasm_writeLinearNote(
   const Snes* snes,
   FILE* notesOut,
@@ -743,83 +865,44 @@ bool rom_disassemble_with_notes(Snes* snes, FILE* out, FILE* notesOut, int instr
     return false;
   }
 
-  uint16_t pc = snes_read(snes, 0xfffc) | (snes_read(snes, 0xfffd) << 8);
-  uint8_t bank = 0x00;
-  bool e = true;
-  bool mf = true;
-  bool xf = true;
-  bool c = false;
-  bool cKnown = true;
-  bool firstNote = true;
+  std::vector<RomAnalysisNode> nodes;
+  if(!rom_disasm_collectReachableNodes(snes, instructionLimit, &nodes)) {
+    return false;
+  }
+
+  std::vector<const RomAnalysisNode*> uniqueNodes;
+  std::unordered_set<uint32_t> seenAddresses;
+  uniqueNodes.reserve(nodes.size());
+  for(size_t i = 0; i < nodes.size(); ++i) {
+    if(nodes[i].synthetic) {
+      continue;
+    }
+    const uint32_t address = nodes[i].info.address & 0xffffff;
+    if(!seenAddresses.insert(address).second) {
+      continue;
+    }
+    uniqueNodes.push_back(&nodes[i]);
+  }
+
+  std::sort(uniqueNodes.begin(), uniqueNodes.end(), [](const RomAnalysisNode* lhs, const RomAnalysisNode* rhs) {
+    return (lhs->info.address & 0xffffff) < (rhs->info.address & 0xffffff);
+  });
 
   if(notesOut != NULL) {
     fprintf(notesOut, "{\n  \"annotations\": [\n");
   }
 
-  for(int i = 0; i < instructionLimit; ++i) {
-    uint32_t address = (bank << 16) | pc;
-    uint8_t bytes[4] = {
-      snes_read(snes, address),
-      snes_read(snes, (address + 1) & 0xffffff),
-      snes_read(snes, (address + 2) & 0xffffff),
-      snes_read(snes, (address + 3) & 0xffffff)
-    };
-    uint8_t size = cpu_getInstructionSize(bytes[0], mf, xf);
-    CpuInstructionInfo info = {};
-    cpu_disassembleInstruction(address, mf, xf, bytes, size, &info);
-    rom_disasm_format(&info, out);
+  bool firstNote = true;
+  for(size_t i = 0; i < uniqueNodes.size(); ++i) {
+    rom_disasm_format(&uniqueNodes[i]->info, out);
     if(notesOut != NULL) {
-      if(rom_disasm_isRomAddress(snes, address)) {
-        if(!firstNote) {
-          fprintf(notesOut, ",\n");
-        }
-        if(rom_disasm_writeLinearNote(snes, notesOut, address, &info)) {
-          firstNote = false;
-        }
+      if(!firstNote) {
+        fprintf(notesOut, ",\n");
+      }
+      if(rom_disasm_writeLinearNote(snes, notesOut, uniqueNodes[i]->info.address, &uniqueNodes[i]->info)) {
+        firstNote = false;
       }
     }
-
-    switch(bytes[0]) {
-      case 0x18:
-        c = false;
-        cKnown = true;
-        break;
-      case 0x38:
-        c = true;
-        cKnown = true;
-        break;
-      case 0xc2:
-        if(size > 1) {
-          mf = mf && ((bytes[1] & 0x20) == 0);
-          xf = xf && ((bytes[1] & 0x10) == 0);
-          if(e) {
-            mf = true;
-            xf = true;
-          }
-        }
-        break;
-      case 0xe2:
-        if(size > 1) {
-          if(bytes[1] & 0x20) mf = true;
-          if(bytes[1] & 0x10) xf = true;
-        }
-        break;
-      case 0xfb:
-        if(cKnown) {
-          bool newCarry = e;
-          e = c;
-          c = newCarry;
-          if(e) {
-            mf = true;
-            xf = true;
-          }
-        }
-        break;
-      default:
-        break;
-    }
-
-    pc = static_cast<uint16_t>(pc + size);
   }
 
   if(notesOut != NULL) {
