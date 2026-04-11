@@ -841,13 +841,12 @@ static bool rom_disasm_writeLinearNote(
   }
   fprintf(notesOut, "],\n");
   fprintf(notesOut, "      \"note\": \"");
-  char note[256];
-  if(info->operands[0] != '\0') {
-    snprintf(note, sizeof(note), "%06x: %s %s", info->address & 0xffffff, info->mnemonic, info->operands);
-  } else {
-    snprintf(note, sizeof(note), "%06x: %s", info->address & 0xffffff, info->mnemonic);
-  }
-  rom_disasm_writeJsonEscaped(notesOut, note);
+  RomAnalysisNode node = {};
+  node.info = *info;
+  node.hasFileOffset = true;
+  node.fileOffset = fileOffset;
+  const std::string note = rom_disasm_noteTextForNode(snes, node);
+  rom_disasm_writeJsonEscaped(notesOut, note.c_str());
   char color[16];
   rom_disasm_mnemonicColor(info->mnemonic, color, sizeof(color));
   fprintf(notesOut, "\",\n");
