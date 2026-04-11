@@ -40,6 +40,7 @@ typedef struct RomDisassemblyControl {
 } RomDisassemblyControl;
 
 bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit);
+bool rom_disassemble_with_notes(Snes* snes, FILE* out, FILE* notesOut, int instructionLimit);
 bool rom_disassemble_cfg(Snes* snes, FILE* out, int instructionLimit);
 bool rom_disassemble_cfg_with_control(Snes* snes, FILE* out, int instructionLimit, const RomDisassemblyControl* control);
 bool rom_disassemble_cfg_with_outputs(Snes* snes, FILE* dotOut, FILE* notesOut, int instructionLimit, const RomDisassemblyControl* control);

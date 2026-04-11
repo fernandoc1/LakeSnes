@@ -694,7 +694,50 @@ static void rom_disasm_reportProgress(
   control->statusCallback(control->userData, &progress);
 }
 
+static void rom_disasm_writeLinearNote(
+  const Snes* snes,
+  FILE* notesOut,
+  uint32_t address,
+  const CpuInstructionInfo* info
+) {
+  if(snes == NULL || notesOut == NULL || info == NULL || info->size == 0) {
+    return;
+  }
+
+  uint32_t fileOffset = 0;
+  if(!rom_disasm_getFileOffset(snes, address, &fileOffset)) {
+    return;
+  }
+
+  fprintf(notesOut, "    {\n");
+  fprintf(notesOut, "      \"positions\": [");
+  for(uint8_t i = 0; i < info->size; ++i) {
+    if(i != 0) {
+      fprintf(notesOut, ", ");
+    }
+    fprintf(notesOut, "\"0x%x\"", (unsigned)(fileOffset + i));
+  }
+  fprintf(notesOut, "],\n");
+  fprintf(notesOut, "      \"note\": \"");
+  char note[256];
+  if(info->operands[0] != '\0') {
+    snprintf(note, sizeof(note), "%06x: %s %s", info->address & 0xffffff, info->mnemonic, info->operands);
+  } else {
+    snprintf(note, sizeof(note), "%06x: %s", info->address & 0xffffff, info->mnemonic);
+  }
+  rom_disasm_writeJsonEscaped(notesOut, note);
+  char color[16];
+  rom_disasm_mnemonicColor(info->mnemonic, color, sizeof(color));
+  fprintf(notesOut, "\",\n");
+  fprintf(notesOut, "      \"color\": \"%s\"\n", color);
+  fprintf(notesOut, "    }");
+}
+
 bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
+  return rom_disassemble_with_notes(snes, out, NULL, instructionLimit);
+}
+
+bool rom_disassemble_with_notes(Snes* snes, FILE* out, FILE* notesOut, int instructionLimit) {
   if(snes == NULL || out == NULL || instructionLimit <= 0) {
     return false;
   }
@@ -706,6 +749,11 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
   bool xf = true;
   bool c = false;
   bool cKnown = true;
+  bool firstNote = true;
+
+  if(notesOut != NULL) {
+    fprintf(notesOut, "{\n  \"annotations\": [\n");
+  }
 
   for(int i = 0; i < instructionLimit; ++i) {
     uint32_t address = (bank << 16) | pc;
@@ -719,6 +767,13 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
     CpuInstructionInfo info = {};
     cpu_disassembleInstruction(address, mf, xf, bytes, size, &info);
     rom_disasm_format(&info, out);
+    if(notesOut != NULL) {
+      if(!firstNote) {
+        fprintf(notesOut, ",\n");
+      }
+      firstNote = false;
+      rom_disasm_writeLinearNote(snes, notesOut, address, &info);
+    }
 
     switch(bytes[0]) {
       case 0x18:
@@ -761,6 +816,10 @@ bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
     }
 
     pc = static_cast<uint16_t>(pc + size);
+  }
+
+  if(notesOut != NULL) {
+    fprintf(notesOut, "\n  ]\n}\n");
   }
 
   return true;

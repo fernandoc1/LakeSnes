@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
   const char* copLibPath = NULL;
   const char* cfgOutputPath = NULL;
   const char* cfgNotesOutputPath = NULL;
+  const char* disasmNotesOutputPath = NULL;
   const char* runtimeCfgOutputPath = NULL;
   const char* runtimeNotesOutputPath = NULL;
   const char* runtimeWramNotesOutputPath = NULL;
@@ -157,6 +158,12 @@ int main(int argc, char** argv) {
         return 1;
       }
       cfgNotesOutputPath = argv[++i];
+    } else if(strcmp(argv[i], "--disasm-notes-out") == 0) {
+      if(i + 1 >= argc) {
+        fprintf(stderr, "Missing value for --disasm-notes-out\n");
+        return 1;
+      }
+      disasmNotesOutputPath = argv[++i];
     } else if(strcmp(argv[i], "--runtime-cfg-out") == 0) {
       if(i + 1 >= argc) {
         fprintf(stderr, "Missing value for --runtime-cfg-out\n");
@@ -189,11 +196,11 @@ int main(int argc, char** argv) {
   }
 
   if(disasmRomMode) {
-    if(romPath == NULL) {
-      fprintf(stderr, "Usage: %s --disasm-rom [--disasm-limit N] <rom>\n", argv[0]);
+    if(romPath == NULL || disasmNotesOutputPath == NULL) {
+      fprintf(stderr, "Usage: %s --disasm-rom --disasm-notes-out <file.json> [--disasm-limit N] <rom>\n", argv[0]);
       return 1;
     }
-    return runRomDisassembly(romPath, disasmInstructionLimit, false, NULL, NULL);
+    return runRomDisassembly(romPath, disasmInstructionLimit, false, NULL, disasmNotesOutputPath);
   }
 
   if(cfgRomMode) {
@@ -695,9 +702,18 @@ static int runRomDisassembly(const char* romPath, int instructionLimit, bool cfg
           result = 1;
         }
       }
-    } else if(!rom_disassemble(snes, out, instructionLimit)) {
-      fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
-      result = 1;
+    } else {
+      if(notesOutputPath != NULL) {
+        notesOut = fopen(notesOutputPath, "w");
+        if(notesOut == NULL) {
+          fprintf(stderr, "Failed to open disassembly notes output '%s'\n", notesOutputPath);
+          result = 1;
+        }
+      }
+      if(result == 0 && !rom_disassemble_with_notes(snes, out, notesOut, instructionLimit)) {
+        fprintf(stderr, "Failed to disassemble ROM '%s'\n", romPath);
+        result = 1;
+      }
     }
   }
 

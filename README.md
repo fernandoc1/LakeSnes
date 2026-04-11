@@ -94,7 +94,7 @@ Load a coprocessor hook library:
 Disassemble ROM bytes starting from reset:
 
 ```bash
-./lakesnes --disasm-rom [--disasm-limit N] path/to/game.sfc
+./lakesnes --disasm-rom --disasm-notes-out path/to/disasm_notes.json [--disasm-limit N] path/to/game.sfc
 ```
 
 Build a static CFG from ROM analysis:
@@ -121,7 +121,8 @@ Record runtime mem_viewer annotations during emulation and dump them on exit:
 | ------ | ------- |
 | `--record-trace` | Starts instruction trace recording automatically after the ROM is loaded. This uses the same trace file path the interactive trace hotkeys use. |
 | `--cop-lib <path>` | Loads a dynamic library and installs its exported coprocessor hook (`lakesnes_cop_execute`) into the emulator CPU. |
-| `--disasm-rom` | Runs ROM disassembly mode instead of launching the interactive emulator. |
+| `--disasm-rom` | Runs reset-based ROM disassembly mode instead of launching the interactive emulator. It prints the linear disassembly to stdout. |
+| `--disasm-notes-out <file.json>` | Required with `--disasm-rom`. Writes mem_viewer-compatible note annotations for the linear disassembly, keyed to ROM file offsets so the ROM and notes can be opened together in `mem_viewer/bin_view`. |
 | `--disasm-limit <N>` | Limits the ROM disassembly to `N` instructions. Must be greater than zero. Default: `4096`. |
 | `--cfg-rom` | Runs static control-flow graph generation mode instead of launching the interactive emulator. |
 | `--cfg-out <file.dot>` | Required with `--cfg-rom`. Writes the static CFG in Graphviz DOT format. |
@@ -133,9 +134,11 @@ Record runtime mem_viewer annotations during emulation and dump them on exit:
 ### Notes
 
 - `--disasm-rom` and `--cfg-rom` are mutually exclusive.
+- `--disasm-notes-out` is mandatory when `--disasm-rom` is used.
 - `--cfg-out` is mandatory when `--cfg-rom` is used.
 - In `--cfg-rom` mode on POSIX systems, `SIGUSR1` prints progress and `SIGUSR2` requests a clean stop.
 - Runtime CFG export is based on executed instructions only. Static CFG export is based on reachable decoded ROM instructions.
+- Disassembly notes export is keyed to ROM file offsets and is intended for use with `mem_viewer/bin_view` on the ROM file itself.
 - Runtime notes export is keyed to ROM file offsets and is intended for use with `mem_viewer/bin_view` on the ROM file itself.
 - The plain emulator path still accepts an optional ROM path even when no other flags are supplied.
 
@@ -159,10 +162,16 @@ Start the emulator with a coprocessor hook library:
 ./lakesnes --cop-lib ./hooklib_ff6/libff6cop.so roms/ff6-en1.sfc
 ```
 
-Dump a short reset-based ROM disassembly to stdout:
+Dump a short reset-based ROM disassembly to stdout and create mem_viewer notes:
 
 ```bash
-./lakesnes --disasm-rom --disasm-limit 256 roms/ff6-en1.sfc
+./lakesnes --disasm-rom --disasm-notes-out /tmp/ff6_disasm_notes.json --disasm-limit 256 roms/ff6-en1.sfc
+```
+
+Open the ROM together with those linear disassembly notes in `bin_view`:
+
+```bash
+./mem_viewer/bin_view roms/ff6-en1.sfc /tmp/ff6_disasm_notes.json
 ```
 
 Build a static CFG and stop after 10,000 discovered nodes:
