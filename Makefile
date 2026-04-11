@@ -35,10 +35,10 @@ libs:
 %.cpp.o: %.cpp $(hfiles)
 	$(CC) $(CFLAGS) $(sdlcflags) -c -o $@ $<
 
-$(execname): $(ofiles)
+$(execname): $(ofiles) libs
 	$(CC) $(CFLAGS) -rdynamic -o $@ $(ofiles) $(sdlldflags) $(dlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
 
-$(trace_dump_exec): trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o
+$(trace_dump_exec): trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o libs
 	$(CC) $(CFLAGS) $(sdlcflags) -o $@ trace_dump.cpp snes/trace_recorder.cpp.o snes/cpu.cpp.o snes/spc.o snes/dsp.o snes/apu.o snes/dma.o snes/ppu.o snes/cart.o snes/input.o snes/statehandler.o snes/snes.o snes/snes_other.o zip/zip.o $(sdlldflags) -L. -lmemviewer -Wl,-rpath,'$$ORIGIN'
 
 clean:

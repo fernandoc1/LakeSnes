@@ -69,6 +69,7 @@ struct Snes {
   uint8_t openBus;
   uint32_t romFileSize;
   uint32_t romFileHeaderSize;
+  bool printRtl;
   SnesAccessHook accessHook;
   void* accessHookUserData;
   void** memoryAccessCallbackPages;

@@ -51,6 +51,7 @@ Snes* snes_init(void) {
   snes->palTiming = false;
   snes->romFileSize = 0;
   snes->romFileHeaderSize = 0;
+  snes->printRtl = false;
   snes->accessHook = NULL;
   snes->accessHookUserData = NULL;
   snes->memoryAccessCallbackPages = NULL;

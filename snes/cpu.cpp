@@ -1655,8 +1655,17 @@ static void cpu_doOpcode(Cpu* cpu, uint8_t opcode) {
       cpu->pc = cpu_pullWord(cpu, false) + 1;
       cpu_checkInt(cpu);
       cpu->k = cpu_pullByte(cpu);
+      if(cpu->snes->printRtl) {
+        uint32_t fileOffset;
+        if(snes_getRomFileOffset(cpu->snes, (cpu->k << 16) | cpu->pc, &fileOffset)) {
+          printf("RTL to 0x%06x (file 0x%06x)\n", (cpu->k << 16) | cpu->pc, fileOffset);
+        } else {
+          printf("RTL to 0x%06x (no file offset)\n", (cpu->k << 16) | cpu->pc);
+        }
+      }
       break;
     }
+
     case 0x6c: { // jmp ind
       uint16_t adr = cpu_readOpcodeWord(cpu, false);
       cpu->pc = cpu_readWord(cpu, adr, (adr + 1) & 0xffff, true);

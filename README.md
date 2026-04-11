@@ -85,6 +85,12 @@ Run with trace recording enabled from startup:
 ./lakesnes --record-trace path/to/game.sfc
 ```
 
+Print RTL return addresses and file offsets:
+
+```bash
+./lakesnes --print-rtl path/to/game.sfc
+```
+
 Load a coprocessor hook library:
 
 ```bash
@@ -120,6 +126,7 @@ Record runtime mem_viewer annotations during emulation and dump them on exit:
 | Option | Meaning |
 | ------ | ------- |
 | `--record-trace` | Starts instruction trace recording automatically after the ROM is loaded. This uses the same trace file path the interactive trace hotkeys use. |
+| `--print-rtl` | Prints the SNES return address and corresponding ROM file offset every time an `RTL` instruction is executed. |
 | `--cop-lib <path>` | Loads a dynamic library and installs its exported coprocessor hook (`lakesnes_cop_execute`) into the emulator CPU. |
 | `--disasm-rom` | Runs reset-based ROM disassembly mode instead of launching the interactive emulator. It prints the linear disassembly to stdout. |
 | `--disasm-notes-out <file.json>` | Required with `--disasm-rom`. Writes mem_viewer-compatible note annotations for the linear disassembly, keyed to ROM file offsets so the ROM and notes can be opened together in `mem_viewer/bin_view`. |
@@ -154,6 +161,12 @@ Start the emulator and immediately begin trace recording:
 
 ```bash
 ./lakesnes --record-trace roms/ff6-en1.sfc
+```
+
+Start the emulator and print RTL return information:
+
+```bash
+./lakesnes --print-rtl roms/ff6-en1.sfc
 ```
 
 Start the emulator with a coprocessor hook library:

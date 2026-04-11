@@ -103,6 +103,7 @@ static volatile sig_atomic_t g_cfgStatusRequested = 0;
 int main(int argc, char** argv) {
   bool disasmRomMode = false;
   bool cfgRomMode = false;
+  bool printRtl = false;
   int disasmInstructionLimit = 4096;
   const char* romPath = NULL;
   const char* copLibPath = NULL;
@@ -116,6 +117,8 @@ int main(int argc, char** argv) {
   for(int i = 1; i < argc; ++i) {
     if(strcmp(argv[i], "--record-trace") == 0) {
       glb.recordTraceOnStartup = true;
+    } else if(strcmp(argv[i], "--print-rtl") == 0) {
+      printRtl = true;
     } else if(strcmp(argv[i], "--cop-lib") == 0) {
       if(i + 1 >= argc) {
         fprintf(stderr, "Missing value for --cop-lib\n");
@@ -282,6 +285,7 @@ int main(int argc, char** argv) {
   );
   // init snes, load rom
   glb.snes = snes_init();
+  glb.snes->printRtl = printRtl;
   glb.wantedFrames = 1.0 / 60.0;
   glb.wantedSamples = glb.audioFrequency / 60;
   glb.loaded = false;
