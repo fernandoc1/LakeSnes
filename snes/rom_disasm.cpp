@@ -694,19 +694,19 @@ static void rom_disasm_reportProgress(
   control->statusCallback(control->userData, &progress);
 }
 
-static void rom_disasm_writeLinearNote(
+static bool rom_disasm_writeLinearNote(
   const Snes* snes,
   FILE* notesOut,
   uint32_t address,
   const CpuInstructionInfo* info
 ) {
   if(snes == NULL || notesOut == NULL || info == NULL || info->size == 0) {
-    return;
+    return false;
   }
 
   uint32_t fileOffset = 0;
   if(!rom_disasm_getFileOffset(snes, address, &fileOffset)) {
-    return;
+    return false;
   }
 
   fprintf(notesOut, "    {\n");
@@ -731,6 +731,7 @@ static void rom_disasm_writeLinearNote(
   fprintf(notesOut, "\",\n");
   fprintf(notesOut, "      \"color\": \"%s\"\n", color);
   fprintf(notesOut, "    }");
+  return true;
 }
 
 bool rom_disassemble(Snes* snes, FILE* out, int instructionLimit) {
@@ -768,11 +769,14 @@ bool rom_disassemble_with_notes(Snes* snes, FILE* out, FILE* notesOut, int instr
     cpu_disassembleInstruction(address, mf, xf, bytes, size, &info);
     rom_disasm_format(&info, out);
     if(notesOut != NULL) {
-      if(!firstNote) {
-        fprintf(notesOut, ",\n");
+      if(rom_disasm_isRomAddress(snes, address)) {
+        if(!firstNote) {
+          fprintf(notesOut, ",\n");
+        }
+        if(rom_disasm_writeLinearNote(snes, notesOut, address, &info)) {
+          firstNote = false;
+        }
       }
-      firstNote = false;
-      rom_disasm_writeLinearNote(snes, notesOut, address, &info);
     }
 
     switch(bytes[0]) {
