@@ -887,18 +887,32 @@ bool rom_disassemble_with_notes(Snes* snes, FILE* out, FILE* notesOut, int instr
     return (lhs->info.address & 0xffffff) < (rhs->info.address & 0xffffff);
   });
 
+  std::vector<const RomAnalysisNode*> linearizedNodes;
+  linearizedNodes.reserve(uniqueNodes.size());
+  uint32_t coveredUntil = 0;
+  bool haveCoveredRange = false;
+  for(size_t i = 0; i < uniqueNodes.size(); ++i) {
+    const uint32_t address = uniqueNodes[i]->info.address & 0xffffff;
+    if(haveCoveredRange && address < coveredUntil) {
+      continue;
+    }
+    linearizedNodes.push_back(uniqueNodes[i]);
+    coveredUntil = address + uniqueNodes[i]->info.size;
+    haveCoveredRange = true;
+  }
+
   if(notesOut != NULL) {
     fprintf(notesOut, "{\n  \"annotations\": [\n");
   }
 
   bool firstNote = true;
-  for(size_t i = 0; i < uniqueNodes.size(); ++i) {
-    rom_disasm_format(&uniqueNodes[i]->info, out);
+  for(size_t i = 0; i < linearizedNodes.size(); ++i) {
+    rom_disasm_format(&linearizedNodes[i]->info, out);
     if(notesOut != NULL) {
       if(!firstNote) {
         fprintf(notesOut, ",\n");
       }
-      if(rom_disasm_writeLinearNote(snes, notesOut, uniqueNodes[i]->info.address, &uniqueNodes[i]->info)) {
+      if(rom_disasm_writeLinearNote(snes, notesOut, linearizedNodes[i]->info.address, &linearizedNodes[i]->info)) {
         firstNote = false;
       }
     }
