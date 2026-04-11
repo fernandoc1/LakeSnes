@@ -184,6 +184,7 @@ extern "C" void lakesnes_register_memory_access_callback(
   void* registrarUserData
 ) {
   (void) snes;
+  registrar(registrarUserData, 0x7e0102, onWramAccess, (void*) "stack watch $7E0102");
   registrar(registrarUserData, 0x7e1600, onWramAccess, (void*) "watch $7E1600");
   registrar(registrarUserData, 0x7e1601, onWramAccess, (void*) "watch $7E1601");
   registrar(registrarUserData, 0x7e1602, onWramAccess, (void*) "watch $7E1602");

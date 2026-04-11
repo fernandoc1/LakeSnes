@@ -560,7 +560,7 @@ bool snes_getRomFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOff
       if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
         return false;
       }
-      romOffset = ((bankMasked << 15) | (adr & 0x7fff)) & (snes->cart->romSize - 1);
+      romOffset = ((bankMasked << 15) | (adr & 0x7fff)) % snes->cart->romSize;
       break;
     }
     case 2: {
@@ -568,7 +568,7 @@ bool snes_getRomFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOff
       if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
         return false;
       }
-      romOffset = (((bankMasked & 0x3f) << 16) | adr) & (snes->cart->romSize - 1);
+      romOffset = (((bankMasked & 0x3f) << 16) | adr) % snes->cart->romSize;
       break;
     }
     case 3: {
@@ -577,11 +577,18 @@ bool snes_getRomFileOffset(const Snes* snes, uint32_t address, uint32_t* fileOff
       if(!(adr >= 0x8000 || bankMasked >= 0x40)) {
         return false;
       }
-      romOffset = (((bankMasked & 0x3f) << 16) | (secondHalf ? 0x400000 : 0) | adr) & (snes->cart->romSize - 1);
+      romOffset = (((bankMasked & 0x3f) << 16) | (secondHalf ? 0x400000 : 0) | adr) % snes->cart->romSize;
       break;
     }
     default:
       return false;
+  }
+
+  // Check if the calculated offset is within the bounds of the original file data (excluding any header)
+  uint32_t actualRomSize = snes->romFileSize - snes->romFileHeaderSize;
+  if (romOffset >= actualRomSize) {
+    // If it's in the mirrored area, wrap it back to the actual ROM data
+    romOffset %= actualRomSize;
   }
 
   *fileOffset = romOffset + snes->romFileHeaderSize;
@@ -615,11 +622,21 @@ void snes_setAccessHook(Snes* snes, SnesAccessHook hook, void* userData) {
   snes->accessHookUserData = userData;
 }
 
+static uint32_t snes_normalizeAddress(uint32_t adr) {
+  adr &= 0xffffff;
+  const uint8_t bank = adr >> 16;
+  const uint16_t offset = adr & 0xffff;
+  if ((bank < 0x40 || (bank >= 0x80 && bank < 0xc0)) && offset < 0x2000) {
+    return 0x7e0000 | offset;
+  }
+  return adr;
+}
+
 void snes_setMemoryAccessCallback(Snes* snes, uint32_t adr, SnesMemoryAccessCallback callback, void* userData) {
   if(snes == NULL) {
     return;
   }
-  adr &= 0xffffff;
+  adr = snes_normalizeAddress(adr);
   const uint32_t pageIndex = adr >> SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS;
   const uint32_t entryIndex = adr & SNES_MEMORY_ACCESS_CALLBACK_PAGE_MASK;
 
@@ -691,7 +708,7 @@ static void snes_dispatchMemoryAccessCallback(Snes* snes, uint32_t adr, uint8_t 
     return;
   }
 
-  const uint32_t maskedAdr = adr & 0xffffff;
+  const uint32_t maskedAdr = snes_normalizeAddress(adr);
   const uint32_t pageIndex = maskedAdr >> SNES_MEMORY_ACCESS_CALLBACK_PAGE_BITS;
   SnesMemoryAccessCallbackPage* page =
     (SnesMemoryAccessCallbackPage*) snes->memoryAccessCallbackPages[pageIndex];
